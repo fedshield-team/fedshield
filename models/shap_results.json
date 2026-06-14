@@ -1,0 +1,168 @@
+{
+  "feature_importance": [
+    {
+      "feature": "dst_host_serror_rate",
+      "shap_score": 0.06236532167108127
+    },
+    {
+      "feature": "logged_in",
+      "shap_score": 0.05300464662672264
+    },
+    {
+      "feature": "same_srv_rate",
+      "shap_score": 0.0404130226366763
+    },
+    {
+      "feature": "srv_serror_rate",
+      "shap_score": 0.03500398141356354
+    },
+    {
+      "feature": "protocol_type",
+      "shap_score": 0.0341468780833025
+    },
+    {
+      "feature": "dst_host_srv_count",
+      "shap_score": 0.02880015852754754
+    },
+    {
+      "feature": "dst_host_srv_serror_rate",
+      "shap_score": 0.02732870637613884
+    },
+    {
+      "feature": "dst_host_rerror_rate",
+      "shap_score": 0.023537171568505502
+    },
+    {
+      "feature": "dst_host_same_srv_rate",
+      "shap_score": 0.020773491171477105
+    },
+    {
+      "feature": "dst_host_count",
+      "shap_score": 0.020291355990296144
+    },
+    {
+      "feature": "count",
+      "shap_score": 0.018442952850661592
+    },
+    {
+      "feature": "rerror_rate",
+      "shap_score": 0.015849287692888694
+    },
+    {
+      "feature": "dst_host_same_src_port_rate",
+      "shap_score": 0.015031884228440649
+    },
+    {
+      "feature": "serror_rate",
+      "shap_score": 0.011710496663335462
+    },
+    {
+      "feature": "dst_host_srv_diff_host_rate",
+      "shap_score": 0.010447807563676526
+    },
+    {
+      "feature": "srv_rerror_rate",
+      "shap_score": 0.00989568894223582
+    },
+    {
+      "feature": "hot",
+      "shap_score": 0.009812504641867207
+    },
+    {
+      "feature": "dst_host_diff_srv_rate",
+      "shap_score": 0.00912395979916109
+    },
+    {
+      "feature": "diff_srv_rate",
+      "shap_score": 0.007646797675868736
+    },
+    {
+      "feature": "dst_bytes",
+      "shap_score": 0.007574913886048107
+    },
+    {
+      "feature": "srv_diff_host_rate",
+      "shap_score": 0.006918342975675126
+    },
+    {
+      "feature": "duration",
+      "shap_score": 0.006492493754845275
+    },
+    {
+      "feature": "service",
+      "shap_score": 0.0064739530115814035
+    },
+    {
+      "feature": "srv_count",
+      "shap_score": 0.006410446583529083
+    },
+    {
+      "feature": "flag",
+      "shap_score": 0.006376861585097618
+    },
+    {
+      "feature": "land",
+      "shap_score": 0.0063530001258262185
+    },
+    {
+      "feature": "src_bytes",
+      "shap_score": 0.0061469964961798716
+    },
+    {
+      "feature": "num_root",
+      "shap_score": 0.005768864350919074
+    },
+    {
+      "feature": "dst_host_srv_rerror_rate",
+      "shap_score": 0.005123692738711494
+    },
+    {
+      "feature": "is_guest_login",
+      "shap_score": 0.004554634049931029
+    },
+    {
+      "feature": "wrong_fragment",
+      "shap_score": 0.0
+    },
+    {
+      "feature": "urgent",
+      "shap_score": 0.0
+    },
+    {
+      "feature": "num_failed_logins",
+      "shap_score": 0.0
+    },
+    {
+      "feature": "num_compromised",
+      "shap_score": 0.0
+    },
+    {
+      "feature": "root_shell",
+      "shap_score": 0.0
+    },
+    {
+      "feature": "su_attempted",
+      "shap_score": 0.0
+    },
+    {
+      "feature": "num_file_creations",
+      "shap_score": 0.0
+    },
+    {
+      "feature": "num_shells",
+      "shap_score": 0.0
+    },
+    {
+      "feature": "num_access_files",
+      "shap_score": 0.0
+    },
+    {
+      "feature": "num_outbound_cmds",
+      "shap_score": 0.0
+    },
+    {
+      "feature": "is_host_login",
+      "shap_score": 0.0
+    }
+  ]
+}
