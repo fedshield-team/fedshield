@@ -1,0 +1,8 @@
+venv/
+__pycache__/
+*.pyc
+.git/
+*.npy
+data/KDDTrain+.txt
+data/KDDTest+.txt
+models/*.pth

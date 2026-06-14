@@ -1,0 +1,55 @@
+version: '3.8'
+
+services:
+  server:
+    build: .
+    command: python server/flower_server.py
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/app/data
+      - ./models:/app/models
+
+  node1:
+    build: .
+    command: python nodes/flower_client.py 1
+    depends_on:
+      - server
+    volumes:
+      - ./data:/app/data
+      - ./models:/app/models
+    environment:
+      - SERVER_ADDRESS=server:8080
+
+  node2:
+    build: .
+    command: python nodes/flower_client.py 2
+    depends_on:
+      - server
+    volumes:
+      - ./data:/app/data
+      - ./models:/app/models
+    environment:
+      - SERVER_ADDRESS=server:8080
+
+  node3:
+    build: .
+    command: python nodes/flower_client.py 3
+    depends_on:
+      - server
+    volumes:
+      - ./data:/app/data
+      - ./models:/app/models
+    environment:
+      - SERVER_ADDRESS=server:8080
+
+  dashboard:
+    build: .
+    command: streamlit run dashboard/app.py --server.port 8501 --server.address 0.0.0.0
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./data:/app/data
+      - ./models:/app/models
+    depends_on:
+      - server

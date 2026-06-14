@@ -55,7 +55,9 @@ class FedShieldClient(fl.client.NumPyClient):
         return loss, len(self.X_test), {"f1": f1}
 
 
-def start_client(node_id, server_address="127.0.0.1:8080"):
+def start_client(node_id, server_address=None):
+    if server_address is None:
+        server_address = os.environ.get("SERVER_ADDRESS", "127.0.0.1:8080")
     X_train = np.load("data/X_train.npy")
     y_train = np.load("data/y_train.npy")
     X_test = np.load("data/X_test.npy")
