@@ -1,0 +1,9 @@
+venv/
+__pycache__/
+*.pyc
+.env
+data/KDDTrain+.txt
+data/KDDTest+.txt
+*.npy
+models/*.pth
+.DS_Store
