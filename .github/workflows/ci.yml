@@ -1,0 +1,69 @@
+name: FedShield CI/CD
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.12'
+    
+    - name: Install dependencies
+      run: |
+        pip install torch==2.5.1+cpu --index-url https://download.pytorch.org/whl/cpu
+        pip install numpy pandas scikit-learn flwr shap streamlit plotly
+    
+    - name: Download dataset
+      run: python download_data.py
+    
+    - name: Test preprocessing
+      run: python preprocess.py
+    
+    - name: Test model instantiation
+      run: |
+        python -c "
+        from model import IntrusionDetector
+        import torch
+        model = IntrusionDetector()
+        x = torch.randn(10, 41)
+        out = model(x)
+        assert out.shape == (10, 1), 'Model output shape wrong'
+        print('Model test passed!')
+        "
+    
+    - name: Test federated client init
+      run: |
+        python -c "
+        import numpy as np
+        from nodes.node import FedNode
+        X = np.random.randn(100, 41)
+        y = np.random.randint(0, 2, 100).astype(float)
+        node = FedNode(1, X, y)
+        weights = node.get_weights()
+        print(f'Node test passed! Got {len(weights)} weight tensors')
+        "
+
+    - name: Test aggregator
+      run: |
+        python -c "
+        import torch
+        from server.aggregator import fed_avg
+        w1 = [torch.randn(128, 41), torch.randn(128)]
+        w2 = [torch.randn(128, 41), torch.randn(128)]
+        w3 = [torch.randn(128, 41), torch.randn(128)]
+        avg = fed_avg([w1, w2, w3])
+        print(f'FedAvg test passed! Averaged {len(avg)} layers')
+        "
+
+    - name: Build Docker image
+      run: docker build -t fedshield-test .
