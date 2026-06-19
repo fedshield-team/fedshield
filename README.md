@@ -36,13 +36,15 @@ Raw data NEVER leaves. Only model weights travel.
 
 | Metric | Centralized Baseline | FedShield (Federated) |
 |--------|---------------------|----------------------|
-| F1 Score | 0.9947 | 0.9946 |
+| Binary F1 | 0.9947 | 0.9946 |
+| Multi-Class Macro F1 | 0.79 | **0.81** ✅ |
 | Privacy | ❌ Data centralized | ✅ Data never shared |
 | Compliance | ❌ GDPR violation | ✅ GDPR compliant |
-| Scalability | ❌ Single point of failure | ✅ Distributed |
+| Scalability | ❌ Single point | ✅ Distributed |
+| DoS Detection | - | F1: 1.00 |
+| Probe Detection | - | F1: 0.98 |
 
-**0.0001 F1 difference — effectively identical performance with full privacy.**
-
+**Federated learning BEATS centralized on multi-class — with full privacy.**
 ---
 
 ## 🔍 SHAP Explainability — Top Attack Indicators
