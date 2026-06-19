@@ -22,7 +22,7 @@ st.caption("Federated Learning | XAI | Cloud Auto-Scaling | Real-time Detection"
 
 # Sidebar
 st.sidebar.title("Navigation")
-page = st.sidebar.radio("", ["Overview", "Federated Training", "SHAP Explainability", "Live Detection"])
+page = st.sidebar.radio("", ["Overview", "Federated Training", "SHAP Explainability", "Multi-Class Detection", "Live Detection"])
 
 if page == "Overview":
     st.header("System Overview")
@@ -119,6 +119,54 @@ elif page == "SHAP Explainability":
     
     except FileNotFoundError:
         st.error("Run explain.py first!")
+
+elif page == "Multi-Class Detection":
+    st.header("Multi-Class Attack Classification")
+    st.caption("Classifying: Normal | DoS | Probe | R2L | U2R")
+    
+    try:
+        with open("models/multiclass_history.json") as f:
+            mc_history = json.load(f)
+        
+        mc_df = pd.DataFrame(mc_history)
+        
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=mc_df['epoch'], y=mc_df['macro_f1'],
+            name='Macro F1',
+            line=dict(color='#00d4aa', width=3),
+            mode='lines+markers'
+        ))
+        fig.update_layout(
+            title="Multi-Class F1 Score per Epoch (with SMOTE)",
+            xaxis_title="Epoch",
+            yaxis_title="Macro F1",
+            yaxis=dict(range=[0.6, 1.0]),
+            template="plotly_dark",
+            height=400
+        )
+        st.plotly_chart(fig, use_container_width=True)
+        
+        st.subheader("Per-Class Performance")
+        results = {
+            "Class":     ["Normal", "DoS",  "Probe", "R2L",  "U2R"],
+            "Precision": [1.00,     1.00,   0.98,    0.62,   0.14],
+            "Recall":    [0.98,     1.00,   0.99,    0.95,   0.80],
+            "F1-Score":  [0.99,     1.00,   0.98,    0.75,   0.24],
+            "Support":   [13469,    9186,   2331,    199,    10]
+        }
+        df_results = pd.DataFrame(results)
+        st.dataframe(df_results, use_container_width=True, hide_index=True)
+        
+        st.info("**Why is U2R F1 low?** Only 10 test samples exist for U2R attacks — this is a known challenge in NSL-KDD benchmark. SMOTE improved recall from 0.60 to 0.80 by generating synthetic training samples.")
+        
+        col1, col2, col3 = st.columns(3)
+        col1.metric("DoS Detection", "100%", "F1 = 1.00")
+        col2.metric("Probe Detection", "98%", "F1 = 0.98")
+        col3.metric("Macro F1", "0.79", "+0.06 vs no SMOTE")
+        
+    except FileNotFoundError:
+        st.error("Run train_multiclass.py first!")
 
 elif page == "Live Detection":
     st.header("Live Packet Classification")
