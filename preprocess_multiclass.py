@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.model_selection import train_test_split
+import joblib
 
 COLUMNS = [
     'duration','protocol_type','service','flag','src_bytes','dst_bytes',
@@ -55,6 +56,9 @@ def load_multiclass(path):
     
     scaler = StandardScaler()
     X = scaler.fit_transform(X)
+    
+    joblib.dump(scaler, "models/scaler_multiclass.pkl")
+    print("Scaler saved to models/scaler_multiclass.pkl")
     
     return train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
 
