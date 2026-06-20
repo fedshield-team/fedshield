@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 import joblib
+import subprocess
 from collections import defaultdict, deque
 from scapy.all import sniff, IP, TCP, UDP
 import time
@@ -35,11 +36,36 @@ PROTO_MAP = {"tcp": 1, "udp": 2, "icmp": 0}
 log = []
 
 # --- Burst-level port scan detector (separate from per-packet model) ---
-# Tracks distinct destination ports hit per source->dest pair in a short window
 port_scan_tracker = defaultdict(lambda: {"ports": set(), "first_seen": None})
 SCAN_PORT_THRESHOLD = 8       # distinct ports
 SCAN_WINDOW_SECONDS = 3       # within this many seconds
 alerted_pairs = set()
+
+# --- Auto-block via Windows Firewall ---
+blocked_ips = set()
+
+def block_ip(ip):
+    """Add a Windows Firewall rule to block all inbound traffic from this IP."""
+    if ip in blocked_ips:
+        return False
+    try:
+        rule_name = f"FedShield_Block_{ip.replace('.', '_')}"
+        cmd = [
+            "netsh", "advfirewall", "firewall", "add", "rule",
+            f"name={rule_name}",
+            "dir=in", "action=block",
+            f"remoteip={ip}"
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, shell=True)
+        if result.returncode == 0:
+            blocked_ips.add(ip)
+            return True
+        else:
+            print(f"   [WARN] Could not block {ip}: {result.stderr.strip()}")
+            return False
+    except Exception as e:
+        print(f"   [WARN] Block failed for {ip}: {e}")
+        return False
 
 def check_port_scan(src, dst, dport, proto):
     if proto != "tcp" or dport is None:
@@ -128,7 +154,14 @@ def classify_packet(pkt):
     if scan_detected:
         print(f"\n🚨🚨🚨 [{entry['time']}] PORT SCAN DETECTED: {meta['src']} -> {meta['dst']} "
               f"({len(port_scan_tracker[(meta['src'], meta['dst'])]['ports'])} ports in {SCAN_WINDOW_SECONDS}s) "
-              f"=> Probe/Reconnaissance Attack 🚨🚨🚨\n")
+              f"=> Probe/Reconnaissance Attack 🚨🚨🚨")
+
+        blocked = block_ip(meta['src'])
+        if blocked:
+            print(f"🛡️  AUTO-BLOCKED: {meta['src']} via Windows Firewall — all inbound traffic now denied\n")
+        else:
+            print(f"   [{meta['src']} already blocked or block failed]\n")
+
     elif pred_class != 0:
         print(f"🚨 [{entry['time']}] {meta['src']} -> {meta['dst']} ({meta['proto']}) "
               f"=> {label} (confidence: {confidence:.2%})")
@@ -142,6 +175,7 @@ def classify_packet(pkt):
 
 print("\n===== FedShield Live Capture Started =====")
 print(f"Port scan detection: {SCAN_PORT_THRESHOLD}+ ports in {SCAN_WINDOW_SECONDS}s window")
+print("Auto-block: ENABLED (Windows Firewall)")
 print("Sniffing real network traffic on this machine. Press Ctrl+C to stop.\n")
 
 try:
@@ -151,3 +185,5 @@ except KeyboardInterrupt:
     with open("models/live_log.json", "w") as f:
         json.dump(log[-200:], f)
     print(f"Saved {len(log)} classified packets to models/live_log.json")
+    if blocked_ips:
+        print(f"Blocked IPs this session: {blocked_ips}")
