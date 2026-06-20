@@ -20,7 +20,6 @@ class MultiClassIDS(nn.Module):
         )
     def forward(self, x): return self.network(x)
 
-# Load trained model + the SAME scaler used during training
 model = MultiClassIDS()
 model.load_state_dict(torch.load("models/federated_noniid_model.pth"))
 model.eval()
@@ -28,34 +27,56 @@ model.eval()
 scaler = joblib.load("models/scaler_multiclass.pkl")
 print("Model + scaler loaded (federated_noniid_model.pth + scaler_multiclass.pkl)")
 
-# Sliding window state — tracks recent connections per destination host
 WINDOW_SIZE = 100
 recent_connections = deque(maxlen=WINDOW_SIZE)
-host_stats = defaultdict(lambda: {"count": 0, "serror": 0, "same_srv": 0})
+host_stats = defaultdict(lambda: {"count": 0, "serror": 0, "same_srv": 0, "ports": set()})
 
 PROTO_MAP = {"tcp": 1, "udp": 2, "icmp": 0}
-
 log = []
 
+# --- Burst-level port scan detector (separate from per-packet model) ---
+# Tracks distinct destination ports hit per source->dest pair in a short window
+port_scan_tracker = defaultdict(lambda: {"ports": set(), "first_seen": None})
+SCAN_PORT_THRESHOLD = 8       # distinct ports
+SCAN_WINDOW_SECONDS = 3       # within this many seconds
+alerted_pairs = set()
+
+def check_port_scan(src, dst, dport, proto):
+    if proto != "tcp" or dport is None:
+        return False
+    key = (src, dst)
+    now = time.time()
+    entry = port_scan_tracker[key]
+    if entry["first_seen"] is None or (now - entry["first_seen"]) > SCAN_WINDOW_SECONDS:
+        entry["first_seen"] = now
+        entry["ports"] = set()
+    entry["ports"].add(dport)
+
+    if len(entry["ports"]) >= SCAN_PORT_THRESHOLD and key not in alerted_pairs:
+        alerted_pairs.add(key)
+        return True
+    return False
+
 def extract_features(pkt):
-    """Build a raw (unscaled) 41-dim feature vector approximating NSL-KDD fields."""
     if IP not in pkt:
         return None, None
 
     features = np.zeros(41, dtype=np.float32)
-
     proto = "tcp" if TCP in pkt else ("udp" if UDP in pkt else "icmp")
     dst = pkt[IP].dst
     src = pkt[IP].src
+    dport = pkt[TCP].dport if TCP in pkt else None
 
-    features[1] = PROTO_MAP.get(proto, 0)       # protocol_type
-    features[4] = len(pkt)                       # src_bytes (approx via pkt length)
-    features[5] = 0                               # dst_bytes (unknown, no flow tracking)
-    features[11] = 0                               # logged_in (unknown from raw packet)
+    features[1] = PROTO_MAP.get(proto, 0)
+    features[4] = len(pkt)
+    features[5] = 0
+    features[11] = 0
 
     recent_connections.append(dst)
     stats = host_stats[dst]
     stats["count"] += 1
+    if dport:
+        stats["ports"].add(dport)
 
     is_syn_error = False
     if TCP in pkt:
@@ -65,16 +86,16 @@ def extract_features(pkt):
             stats["serror"] += 1
 
     same_host_count = sum(1 for d in recent_connections if d == dst)
-    features[22] = same_host_count                                   # count
+    features[22] = same_host_count
     serror_rate = stats["serror"] / max(stats["count"], 1)
-    features[24] = serror_rate                                       # serror_rate
-    features[37] = serror_rate                                       # dst_host_serror_rate
-    features[28] = same_host_count / max(len(recent_connections), 1) # same_srv_rate
-    features[31] = min(stats["count"], 255)                          # dst_host_count
+    features[24] = serror_rate
+    features[37] = serror_rate
+    features[28] = same_host_count / max(len(recent_connections), 1)
+    features[31] = min(stats["count"], 255)
 
     return features, {
         "src": src, "dst": dst, "proto": proto,
-        "is_syn": is_syn_error, "count": stats["count"]
+        "is_syn": is_syn_error, "count": stats["count"], "dport": dport
     }
 
 def classify_packet(pkt):
@@ -82,7 +103,6 @@ def classify_packet(pkt):
     if raw_features is None:
         return
 
-    # CRITICAL FIX: scale using the SAME scaler fit during training
     scaled = scaler.transform(raw_features.reshape(1, -1))
     x = torch.FloatTensor(scaled)
 
@@ -93,16 +113,23 @@ def classify_packet(pkt):
         confidence = probs[0][pred_class].item()
 
     label = CLASS_NAMES[pred_class]
-    tag = "ATTACK" if pred_class != 0 else "normal"
+
+    # Burst-level port scan check — independent signal, very reliable
+    scan_detected = check_port_scan(meta["src"], meta["dst"], meta["dport"], meta["proto"])
 
     entry = {
         "time": time.strftime("%H:%M:%S"),
         "src": meta["src"], "dst": meta["dst"], "proto": meta["proto"],
-        "prediction": label, "confidence": round(confidence, 3), "tag": tag
+        "prediction": label, "confidence": round(confidence, 3),
+        "tag": "ATTACK" if pred_class != 0 else "normal"
     }
     log.append(entry)
 
-    if pred_class != 0:
+    if scan_detected:
+        print(f"\n🚨🚨🚨 [{entry['time']}] PORT SCAN DETECTED: {meta['src']} -> {meta['dst']} "
+              f"({len(port_scan_tracker[(meta['src'], meta['dst'])]['ports'])} ports in {SCAN_WINDOW_SECONDS}s) "
+              f"=> Probe/Reconnaissance Attack 🚨🚨🚨\n")
+    elif pred_class != 0:
         print(f"🚨 [{entry['time']}] {meta['src']} -> {meta['dst']} ({meta['proto']}) "
               f"=> {label} (confidence: {confidence:.2%})")
     else:
@@ -114,6 +141,7 @@ def classify_packet(pkt):
             json.dump(log[-200:], f)
 
 print("\n===== FedShield Live Capture Started =====")
+print(f"Port scan detection: {SCAN_PORT_THRESHOLD}+ ports in {SCAN_WINDOW_SECONDS}s window")
 print("Sniffing real network traffic on this machine. Press Ctrl+C to stop.\n")
 
 try:
