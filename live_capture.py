@@ -3,6 +3,7 @@ import torch.nn as nn
 import numpy as np
 import joblib
 import subprocess
+import sqlite3
 from collections import defaultdict, deque
 from scapy.all import sniff, IP, TCP, UDP
 import time
@@ -21,6 +22,29 @@ class MultiClassIDS(nn.Module):
         )
     def forward(self, x): return self.network(x)
 
+# ── Database ──────────────────────────────────────────────────────────────────
+def init_db():
+    conn = sqlite3.connect("models/fedshield_logs.db")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS detections (
+            id        INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT,
+            src       TEXT,
+            dst       TEXT,
+            proto     TEXT,
+            prediction TEXT,
+            confidence REAL,
+            tag       TEXT,
+            blocked   INTEGER DEFAULT 0
+        )
+    """)
+    conn.commit()
+    return conn
+
+db_conn = init_db()
+print("SQLite database initialised: models/fedshield_logs.db")
+
+# ── Model + scaler ────────────────────────────────────────────────────────────
 model = MultiClassIDS()
 model.load_state_dict(torch.load("models/federated_noniid_model.pth"))
 model.eval()
@@ -28,6 +52,7 @@ model.eval()
 scaler = joblib.load("models/scaler_multiclass.pkl")
 print("Model + scaler loaded (federated_noniid_model.pth + scaler_multiclass.pkl)")
 
+# ── Sliding-window state ──────────────────────────────────────────────────────
 WINDOW_SIZE = 100
 recent_connections = deque(maxlen=WINDOW_SIZE)
 host_stats = defaultdict(lambda: {"count": 0, "serror": 0, "same_srv": 0, "ports": set()})
@@ -35,13 +60,13 @@ host_stats = defaultdict(lambda: {"count": 0, "serror": 0, "same_srv": 0, "ports
 PROTO_MAP = {"tcp": 1, "udp": 2, "icmp": 0}
 log = []
 
-# --- Burst-level port scan detector (separate from per-packet model) ---
+# ── Burst port-scan detector ──────────────────────────────────────────────────
 port_scan_tracker = defaultdict(lambda: {"ports": set(), "first_seen": None})
-SCAN_PORT_THRESHOLD = 8       # distinct ports
-SCAN_WINDOW_SECONDS = 3       # within this many seconds
+SCAN_PORT_THRESHOLD = 8
+SCAN_WINDOW_SECONDS = 3
 alerted_pairs = set()
 
-# --- Auto-block via Windows Firewall ---
+# ── Auto-block ────────────────────────────────────────────────────────────────
 blocked_ips = set()
 
 def block_ip(ip):
@@ -77,7 +102,6 @@ def check_port_scan(src, dst, dport, proto):
         entry["first_seen"] = now
         entry["ports"] = set()
     entry["ports"].add(dport)
-
     if len(entry["ports"]) >= SCAN_PORT_THRESHOLD and key not in alerted_pairs:
         alerted_pairs.add(key)
         return True
@@ -89,13 +113,13 @@ def extract_features(pkt):
 
     features = np.zeros(41, dtype=np.float32)
     proto = "tcp" if TCP in pkt else ("udp" if UDP in pkt else "icmp")
-    dst = pkt[IP].dst
-    src = pkt[IP].src
+    dst   = pkt[IP].dst
+    src   = pkt[IP].src
     dport = pkt[TCP].dport if TCP in pkt else None
 
-    features[1] = PROTO_MAP.get(proto, 0)
-    features[4] = len(pkt)
-    features[5] = 0
+    features[1]  = PROTO_MAP.get(proto, 0)
+    features[4]  = len(pkt)
+    features[5]  = 0
     features[11] = 0
 
     recent_connections.append(dst)
@@ -105,15 +129,14 @@ def extract_features(pkt):
         stats["ports"].add(dport)
 
     is_syn_error = False
-    if TCP in pkt:
-        flags = pkt[TCP].flags
-        if flags == "S":
-            is_syn_error = True
-            stats["serror"] += 1
+    if TCP in pkt and pkt[TCP].flags == "S":
+        is_syn_error = True
+        stats["serror"] += 1
 
     same_host_count = sum(1 for d in recent_connections if d == dst)
+    serror_rate     = stats["serror"] / max(stats["count"], 1)
+
     features[22] = same_host_count
-    serror_rate = stats["serror"] / max(stats["count"], 1)
     features[24] = serror_rate
     features[37] = serror_rate
     features[28] = same_host_count / max(len(recent_connections), 1)
@@ -133,14 +156,12 @@ def classify_packet(pkt):
     x = torch.FloatTensor(scaled)
 
     with torch.no_grad():
-        logits = model(x)
-        probs = torch.softmax(logits, dim=1)
+        logits     = model(x)
+        probs      = torch.softmax(logits, dim=1)
         pred_class = torch.argmax(probs, dim=1).item()
         confidence = probs[0][pred_class].item()
 
     label = CLASS_NAMES[pred_class]
-
-    # Burst-level port scan check — independent signal, very reliable
     scan_detected = check_port_scan(meta["src"], meta["dst"], meta["dport"], meta["proto"])
 
     entry = {
@@ -151,13 +172,27 @@ def classify_packet(pkt):
     }
     log.append(entry)
 
+    # ── Write to SQLite ───────────────────────────────────────────────────────
+    db_conn.execute("""
+        INSERT INTO detections (timestamp, src, dst, proto, prediction, confidence, tag)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (entry['time'], entry['src'], entry['dst'], entry['proto'],
+          entry['prediction'], entry['confidence'], entry['tag']))
+    db_conn.commit()
+
+    # ── Port-scan alert + auto-block ──────────────────────────────────────────
     if scan_detected:
         print(f"\n🚨🚨🚨 [{entry['time']}] PORT SCAN DETECTED: {meta['src']} -> {meta['dst']} "
-              f"({len(port_scan_tracker[(meta['src'], meta['dst'])]['ports'])} ports in {SCAN_WINDOW_SECONDS}s) "
-              f"=> Probe/Reconnaissance Attack 🚨🚨🚨")
+              f"({len(port_scan_tracker[(meta['src'], meta['dst'])]['ports'])} ports in "
+              f"{SCAN_WINDOW_SECONDS}s) => Probe/Reconnaissance Attack 🚨🚨🚨")
 
         blocked = block_ip(meta['src'])
         if blocked:
+            db_conn.execute(
+                "UPDATE detections SET blocked=1 WHERE src=? ORDER BY id DESC LIMIT 1",
+                (meta['src'],)
+            )
+            db_conn.commit()
             print(f"🛡️  AUTO-BLOCKED: {meta['src']} via Windows Firewall — all inbound traffic now denied\n")
         else:
             print(f"   [{meta['src']} already blocked or block failed]\n")
@@ -169,14 +204,17 @@ def classify_packet(pkt):
         print(f"   [{entry['time']}] {meta['src']} -> {meta['dst']} ({meta['proto']}) => normal "
               f"(confidence: {confidence:.2%})")
 
+    # ── JSON snapshot every 5 packets (kept for dashboard compatibility) ───────
     if len(log) % 5 == 0:
         with open("models/live_log.json", "w") as f:
             json.dump(log[-200:], f)
 
+# ── Entry point ───────────────────────────────────────────────────────────────
 print("\n===== FedShield Live Capture Started =====")
-print(f"Port scan detection: {SCAN_PORT_THRESHOLD}+ ports in {SCAN_WINDOW_SECONDS}s window")
-print("Auto-block: ENABLED (Windows Firewall)")
-print("Sniffing real network traffic on this machine. Press Ctrl+C to stop.\n")
+print(f"Port scan detection : {SCAN_PORT_THRESHOLD}+ distinct ports in {SCAN_WINDOW_SECONDS}s")
+print("Auto-block          : ENABLED (Windows Firewall)")
+print("Audit log           : models/fedshield_logs.db  (SQLite)")
+print("Sniffing real network traffic. Press Ctrl+C to stop.\n")
 
 try:
     sniff(prn=classify_packet, store=False, count=0)
@@ -184,6 +222,13 @@ except KeyboardInterrupt:
     print("\nCapture stopped.")
     with open("models/live_log.json", "w") as f:
         json.dump(log[-200:], f)
-    print(f"Saved {len(log)} classified packets to models/live_log.json")
+    total = db_conn.execute("SELECT COUNT(*) FROM detections").fetchone()[0]
+    attacks = db_conn.execute("SELECT COUNT(*) FROM detections WHERE tag='ATTACK'").fetchone()[0]
+    blocked_count = db_conn.execute("SELECT COUNT(*) FROM detections WHERE blocked=1").fetchone()[0]
+    print(f"\nSession summary:")
+    print(f"  Total packets logged : {total}")
+    print(f"  Attacks detected     : {attacks}")
+    print(f"  IPs auto-blocked     : {blocked_count}")
+    print(f"  DB                   : models/fedshield_logs.db")
     if blocked_ips:
-        print(f"Blocked IPs this session: {blocked_ips}")
+        print(f"  Blocked IPs          : {blocked_ips}")
