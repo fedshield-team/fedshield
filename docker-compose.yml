@@ -3,53 +3,62 @@ version: '3.8'
 services:
   server:
     build: .
+    container_name: fedshield_server
     command: python server/flower_server.py
     ports:
       - "8080:8080"
     volumes:
-      - ./data:/app/data
       - ./models:/app/models
+      - ./data:/app/data
+    restart: always
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; s=socket.create_connection(('localhost',8080),2)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   node1:
     build: .
+    container_name: fedshield_node1
     command: python nodes/flower_client.py 1
     depends_on:
       - server
     volumes:
-      - ./data:/app/data
       - ./models:/app/models
-    environment:
-      - SERVER_ADDRESS=server:8080
+      - ./data:/app/data
+    restart: always
 
   node2:
     build: .
+    container_name: fedshield_node2
     command: python nodes/flower_client.py 2
     depends_on:
       - server
     volumes:
-      - ./data:/app/data
       - ./models:/app/models
-    environment:
-      - SERVER_ADDRESS=server:8080
+      - ./data:/app/data
+    restart: always
 
   node3:
     build: .
+    container_name: fedshield_node3
     command: python nodes/flower_client.py 3
     depends_on:
       - server
     volumes:
-      - ./data:/app/data
       - ./models:/app/models
-    environment:
-      - SERVER_ADDRESS=server:8080
+      - ./data:/app/data
+    restart: always
 
   dashboard:
     build: .
+    container_name: fedshield_dashboard
     command: streamlit run dashboard/app.py --server.port 8501 --server.address 0.0.0.0
     ports:
       - "8501:8501"
     volumes:
-      - ./data:/app/data
       - ./models:/app/models
+      - ./data:/app/data
+    restart: always
     depends_on:
       - server

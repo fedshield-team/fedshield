@@ -1,0 +1,43 @@
+[
+  {
+    "timestamp": "2026-06-23T13:56:24.249153",
+    "metrics": {
+      "total": 33568,
+      "attacks": 120,
+      "blocked": 0,
+      "attack_rate": 0.0036,
+      "recent_total": 26816,
+      "recent_attacks": 118,
+      "recent_rate": 0.0044,
+      "avg_confidence": 0.97,
+      "min_confidence": 0.533,
+      "low_conf_rate": 0.0036,
+      "breakdown": {
+        "DoS": 120,
+        "Normal": 33448
+      }
+    },
+    "history": {
+      "rounds": 15,
+      "final_f1": 0.8449,
+      "best_f1": 0.8633,
+      "worst_f1": 0.6006,
+      "f1_std": 0.0776,
+      "trend": 0.0081,
+      "converged": false,
+      "oscillating": true,
+      "last3_std": 0.0276,
+      "sign_changes": 8
+    },
+    "alerts": [
+      {
+        "level": "WARNING",
+        "type": "OSCILLATION",
+        "message": "Training F1 oscillating (8 sign changes)",
+        "value": 8,
+        "threshold": 0.0
+      }
+    ],
+    "status": "WARNING"
+  }
+]

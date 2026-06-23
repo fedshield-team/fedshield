@@ -1,0 +1,15 @@
+{
+  "8.8.8.8": {
+    "ip": "8.8.8.8",
+    "abuse_score": 0,
+    "total_reports": 128,
+    "country": "US",
+    "isp": "Google LLC",
+    "domain": "google.com",
+    "is_tor": false,
+    "is_known_attacker": false,
+    "last_reported": "2026-06-23T14:40:43+00:00",
+    "cached": false,
+    "cached_at": 1782232725.77606
+  }
+}
