@@ -20,7 +20,7 @@ from prometheus_client import (
 )
 
 # ── Config ─────────────────────────────────────────────────────────────────────
-SECRET_KEY         = "fedshield-jwt-secret-key-change-in-production-2025"
+SECRET_KEY         = os.getenv("JWT_SECRET_KEY", "fedshield-jwt-secret-key-change-in-production-2025")
 ALGORITHM          = "HS256"
 TOKEN_EXPIRE_HOURS = 24
 
