@@ -1,8 +1,14 @@
 venv/
+.venv/
 __pycache__/
 *.pyc
 .git/
-*.npy
-data/KDDTrain+.txt
-data/KDDTest+.txt
+.github/
+data/
+models/*.db
 models/*.pth
+models/*.pt
+*.csv
+node_modules/
+.pytest_cache/
+.env

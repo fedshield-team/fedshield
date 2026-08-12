@@ -14,7 +14,7 @@ class FedShieldClient(fl.client.NumPyClient):
         self.model = IntrusionDetector()
         self.criterion = nn.BCELoss()
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=0.001)
-        
+
         X_t = torch.FloatTensor(X_train)
         y_t = torch.FloatTensor(y_train).unsqueeze(1)
         self.loader = DataLoader(TensorDataset(X_t, y_t), batch_size=256, shuffle=True)
@@ -57,7 +57,10 @@ class FedShieldClient(fl.client.NumPyClient):
 
 def start_client(node_id, server_address=None):
     if server_address is None:
-        server_address = os.environ.get("SERVER_ADDRESS", "127.0.0.1:8080")
+        # Default now points at the docker-compose service name "server",
+        # not localhost — 127.0.0.1 inside a container means "this container",
+        # not the server container.
+        server_address = os.environ.get("SERVER_ADDRESS", "server:8080")
     X_train = np.load("data/X_train.npy")
     y_train = np.load("data/y_train.npy")
     X_test = np.load("data/X_test.npy")
