@@ -4,18 +4,17 @@ WORKDIR /app
 
 RUN pip install --no-cache-dir --upgrade pip
 
-COPY requirements.txt .
-
+# CPU-only torch wheel first (huge size difference vs default CUDA build)
 RUN pip install --no-cache-dir \
-    torch==2.5.1+cpu \
+    torch==2.12.0+cpu \
     --index-url https://download.pytorch.org/whl/cpu
 
-RUN pip install --no-cache-dir \
-    numpy pandas scikit-learn flwr \
-    shap streamlit plotly
+# Everything else comes straight from requirements.txt - single source of truth
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-EXPOSE 8080 8501
+EXPOSE 8000 8080 8501
 
 CMD ["python", "server/flower_server.py"]
