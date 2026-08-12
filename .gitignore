@@ -7,3 +7,7 @@ data/KDDTest+.txt
 *.npy
 models/*.pth
 .DS_Store
+data/
+fedshield.db
+models/fedshield_logs.db
+

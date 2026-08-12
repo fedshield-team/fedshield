@@ -1,5 +1,5 @@
 # 🛡️ FedShield
-### Privacy-Preserving Network Intrusion Detection using Federated Learning & Cloud Auto-Scaling
+### Privacy-Preserving Network Intrusion Detection using Federated Learning, Online Learning & Explainable AI
 
 [![CI/CD](https://github.com/fedshield-team/fedshield/actions/workflows/ci.yml/badge.svg)](https://github.com/fedshield-team/fedshield/actions)
 ![Python](https://img.shields.io/badge/Python-3.12-blue)
@@ -15,20 +15,47 @@
 
 Traditional Intrusion Detection Systems (IDS) require centralizing sensitive network traffic data — violating GDPR, HIPAA, and PCI-DSS compliance. Hospitals, banks, and enterprises **cannot legally share raw traffic data**.
 
-FedShield eliminates this trade-off: **security AND privacy, simultaneously**.
+FedShield eliminates this trade-off: **security AND privacy, simultaneously** — and keeps learning from live traffic without ever needing to re-centralize it.
 
 ---
 
 ## 🏗️ Architecture
+
+```
 Edge Node 1 (Hospital)  ──┐
-
-Edge Node 2 (Bank)      ──┼──► AWS Lambda (FedAvg) ──► Global Model ──► XAI Dashboard
-
-Edge Node 3 (Enterprise)──┘
-
-↑
+Edge Node 2 (Bank)      ──┼──► FedAvg Aggregation Server ──► Global Model ──► XAI Dashboard
+Edge Node 3 (Enterprise)──┘              │
+                                          ▼
+                              LLM Incident Reports (SHAP-explained)
+                                          │
+                                          ▼
+                       Online Retraining (rule-labeled, F1-guarded)
 
 Raw data NEVER leaves. Only model weights travel.
+```
+
+Nodes are orchestrated locally via **Docker Compose**, using the [Flower](https://flower.ai/) framework for real federated coordination (`server/flower_server.py` + `nodes/flower_client.py`) — each node trains independently on its own traffic split and only shares model weights, never raw data.
+
+The aggregation logic (`server/lambda_aggregator.py`) is written to run as an **AWS Lambda function** for serverless, auto-scaling deployment — the FedAvg implementation is cloud-ready and has been validated with local invoke tests, but the project is currently demonstrated end-to-end via Docker orchestration rather than a live AWS deployment.
+
+---
+
+## ✨ Key Features
+
+### 1. Federated Learning Core
+Three simulated edge nodes (hospital, bank, enterprise) train a shared `IntrusionDetector` model on local data splits and aggregate via FedAvg — coordinated through Flower and Docker Compose, with no raw traffic ever leaving a node.
+
+### 2. LLM-Powered Incident Reports
+When an intrusion is flagged, FedShield generates a natural-language incident report (via Groq) explaining *why* the traffic was flagged, backed by **SHAP** per-packet feature attributions — turning a raw model score into something an analyst can actually act on.
+
+### 3. Online Incremental Retraining
+The system doesn't stay static after deployment:
+- New traffic is **rule-confirmed labeled** (no self-training feedback loop, so the model can't reinforce its own mistakes)
+- A **replay buffer** mixes in past examples during retraining to prevent catastrophic forgetting of earlier attack patterns
+- An **F1 regression guard** evaluates each retrained model against a held-out set before accepting it — a retrain is only promoted to production if it doesn't regress performance. In testing, this correctly accepted a genuine improvement (F1 0.8449 → 0.8691) while being able to reject a retrain that made things worse.
+
+### 4. Explainable, Auditable Dashboard
+Real-time Streamlit dashboard with Prometheus metrics, JWT-authenticated API access, and a SQLite audit trail of every incident and retraining event.
 
 ---
 
@@ -45,6 +72,12 @@ Raw data NEVER leaves. Only model weights travel.
 | Probe Detection | - | F1: 0.98 |
 
 **Federated learning BEATS centralized on multi-class — with full privacy.**
+
+### Online Retraining Validation
+| Round | Trigger | F1 Before | F1 After | Outcome |
+|-------|---------|-----------|----------|---------|
+| Test run | Rule-confirmed new traffic | 0.8449 | 0.8691 | ✅ Accepted (regression guard passed) |
+
 ---
 
 ## 🔍 SHAP Explainability — Top Attack Indicators
@@ -76,6 +109,7 @@ docker-compose up --build
 ```
 
 Dashboard available at: **http://localhost:8501**
+API available at: **http://localhost:8000**
 
 ### Run locally
 ```bash
@@ -101,6 +135,12 @@ python nodes/flower_client.py 2
 python nodes/flower_client.py 3
 ```
 
+### Test the serverless aggregation logic locally
+The FedAvg aggregator is written for AWS Lambda deployment. To validate it without deploying to AWS:
+```bash
+python server/lambda_aggregator.py
+```
+
 ---
 
 ## 🛠️ Tech Stack
@@ -109,53 +149,50 @@ python nodes/flower_client.py 3
 |-------|-----------|---------|
 | ML | PyTorch | Neural network training |
 | FL | Flower (flwr) | Federated learning coordination |
-| XAI | SHAP | Explainable AI |
-| Cloud | AWS Lambda | Serverless aggregation + auto-scaling |
-| DevOps | Docker | Containerization |
-| CI/CD | GitHub Actions | Automated testing + deployment |
+| XAI | SHAP | Explainable AI / per-packet feature attribution |
+| LLM | Groq | Natural-language incident report generation |
+| Online Learning | Custom (rule labels + replay buffer + F1 guard) | Safe incremental retraining |
+| Cloud-ready | AWS Lambda (aggregator code) | Serverless aggregation — architected, locally validated |
+| Orchestration | Docker Compose | Multi-node local deployment |
+| API | FastAPI | Incident reports, retraining, model serving |
+| CI/CD | GitHub Actions | Automated testing |
 | Dashboard | Streamlit + Plotly | Real-time visualization |
 | Dataset | NSL-KDD / CICIDS2017 | 125,973 network traffic samples |
 
 ---
 
 ## 📁 Project Structure
+```
 fedshield/
-
-├── data/               # NSL-KDD dataset
-
-├── models/             # Saved models + results
-
-├── nodes/              # Edge node implementations
-
-│   ├── node.py         # FedNode class
-
-│   └── flower_client.py # Flower FL client
-
-├── server/             # Aggregation server
-
-│   ├── aggregator.py   # FedAvg implementation
-
-│   └── flower_server.py # Flower FL server
-
-├── dashboard/          # Streamlit UI
-
+├── data/                          # NSL-KDD dataset
+├── models/                        # Saved models, history, versioning
+│   ├── federated_noniid_model.pth
+│   ├── federated_noniid_history.json
+│   └── model_version.json
+├── nodes/                         # Edge node implementations
+│   ├── node.py                    # FedNode class
+│   └── flower_client.py           # Flower FL client
+├── server/                        # Aggregation server
+│   ├── aggregator.py              # FedAvg implementation
+│   ├── flower_server.py           # Flower FL server
+│   └── lambda_aggregator.py       # AWS Lambda-ready FedAvg (cloud-ready, locally tested)
+├── api/                           # FastAPI backend
+│   ├── main.py
+│   └── incident_reports_endpoints.py
+├── dashboard/                     # Streamlit UI
 │   └── app.py
-
-├── model.py            # IntrusionDetector neural net
-
-├── preprocess.py       # Data preprocessing
-
-├── train_baseline.py   # Centralized baseline
-
-├── federated_train.py  # Federated training
-
-├── explain.py          # SHAP explainability
-
+├── model.py                       # IntrusionDetector neural net
+├── preprocess.py                  # Data preprocessing
+├── train_baseline.py              # Centralized baseline
+├── federated_train.py             # Federated training
+├── explain.py                     # SHAP explainability
+├── llm_incident_report.py         # LLM-generated incident reports (Groq + SHAP)
+├── online_retrain.py              # Online incremental retraining + F1 regression guard
+├── live_capture.py                # Live traffic capture
 ├── Dockerfile
-
 ├── docker-compose.yml
-
 └── requirements.txt
+```
 
 ---
 
@@ -165,6 +202,15 @@ fedshield/
 - ✅ Only model weights (mathematical parameters) are transmitted
 - ✅ GDPR, HIPAA, PCI-DSS compliant architecture
 - ✅ No single point of failure
+
+---
+
+## ☁️ Cloud Deployment Path
+
+The system is architected for cloud deployment beyond the local demo:
+- `server/lambda_aggregator.py` is written as a standard AWS Lambda handler and has been tested locally against real model weight shapes
+- Deployment would package it as a container image on AWS Lambda, with edge nodes running on EC2 and results in RDS instead of SQLite
+- This repo demonstrates the full working system — federated training, aggregation, online retraining, and explainable incident reporting — via Docker-orchestrated local nodes, which validates the same logic that would run in that cloud deployment
 
 ---
 
@@ -188,7 +234,7 @@ fedshield/
 | M. R. Meghana | 23R11A6278 |
 | P. Hathiram | 23R11A6281 |
 
-**Guide:** Mrs. M. Yellamma, Assistant Professor, CSE – Cyber Security  
+**Guide:** Mrs. M. Yellamma, Assistant Professor, CSE – Cyber Security
 **Institution:** Geethanjali College of Engineering and Technology
 
 ---

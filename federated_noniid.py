@@ -1,3 +1,4 @@
+import argparse
 import numpy as np
 import json
 import torch
@@ -7,6 +8,33 @@ from sklearn.metrics import f1_score, classification_report
 from server.aggregator import fed_avg
 
 CLASS_NAMES = ['Normal', 'DoS', 'Probe', 'R2L', 'U2R']
+
+# ---- Dataset selection ---------------------------------------------------
+parser = argparse.ArgumentParser()
+parser.add_argument(
+    "--dataset", choices=["nslkdd", "cicids2017"], default="nslkdd",
+    help="Which preprocessed dataset to run non-IID federated training on"
+)
+args = parser.parse_args()
+
+if args.dataset == "cicids2017":
+    X_TRAIN_PATH = "models/X_train_cicids2017.npy"
+    Y_TRAIN_PATH = "models/y_train_cicids2017.npy"
+    X_TEST_PATH  = "models/X_test_cicids2017.npy"
+    Y_TEST_PATH  = "models/y_test_cicids2017.npy"
+    OUT_MODEL    = "models/federated_noniid_model_cicids2017.pth"
+    OUT_HISTORY  = "models/federated_noniid_history_cicids2017.json"
+else:
+    X_TRAIN_PATH = "data/X_train_mc.npy"
+    Y_TRAIN_PATH = "data/y_train_mc.npy"
+    X_TEST_PATH  = "data/X_test_mc.npy"
+    Y_TEST_PATH  = "data/y_test_mc.npy"
+    OUT_MODEL    = "models/federated_noniid_model.pth"
+    OUT_HISTORY  = "models/federated_noniid_history.json"
+
+print(f"===== DATASET: {args.dataset} =====")
+# ---------------------------------------------------------------------------
+
 
 class MultiClassIDS(nn.Module):
     def __init__(self, input_dim=41, num_classes=5):
@@ -23,11 +51,11 @@ class MultiClassIDS(nn.Module):
         for p, w_ in zip(self.parameters(), w): p.data = w_.clone()
 
 class MultiClassNode:
-    def __init__(self, node_id, X, y, label):
+    def __init__(self, node_id, X, y, label, lr=0.001):
         self.node_id = node_id
         self.label = label
-        self.model = MultiClassIDS()
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=0.001)
+        self.model = MultiClassIDS(input_dim=X.shape[1])
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
         self.criterion = nn.CrossEntropyLoss()
         X_t, y_t = torch.FloatTensor(X), torch.LongTensor(y)
         self.loader = DataLoader(TensorDataset(X_t, y_t), batch_size=256, shuffle=True)
@@ -36,7 +64,7 @@ class MultiClassNode:
         dist = {CLASS_NAMES[u]: c for u, c in zip(unique, counts)}
         print(f"[Node {node_id} - {label}] {len(X)} samples | Distribution: {dist}")
 
-    def train_local(self, epochs=3):
+    def train_local(self, epochs=1):
         self.model.train()
         for _ in range(epochs):
             for X_b, y_b in self.loader:
@@ -48,11 +76,14 @@ class MultiClassNode:
     def set_weights(self, w): self.model.set_weights(w)
 
 
-# Load multi-class data
-X_train = np.load("data/X_train_mc.npy")
-y_train = np.load("data/y_train_mc.npy")
-X_test  = np.load("data/X_test_mc.npy")
-y_test  = np.load("data/y_test_mc.npy")
+# Load multi-class data (path depends on --dataset)
+X_train = np.load(X_TRAIN_PATH)
+y_train = np.load(Y_TRAIN_PATH)
+X_test  = np.load(X_TEST_PATH)
+y_test  = np.load(Y_TEST_PATH)
+
+n_features = X_train.shape[1]
+print(f"Loaded {args.dataset}: {X_train.shape[0]} train rows, {n_features} features")
 
 print("===== CREATING NON-IID SPLIT =====")
 print("Simulating: Hospital (mostly Normal+R2L), Bank (mostly DoS+Probe), Campus (mixed)\n")
@@ -87,13 +118,20 @@ used = set(hospital_idx) | set(bank_idx)
 all_idx = set(range(len(y_train)))
 campus_idx = np.array(list(all_idx - used))
 
+# Larger datasets (CICIDS2017) get more local gradient steps per round even with
+# epochs=1, since each node still has hundreds of thousands of samples — so use a
+# smaller learning rate to avoid client drift when averaging. NSL-KDD keeps the
+# original, higher rate since its nodes are much smaller.
+node_lr = 0.0003 if args.dataset == "cicids2017" else 0.001
+local_epochs = 1 if args.dataset == "cicids2017" else 3
+
 nodes = [
-    MultiClassNode(1, X_train[hospital_idx], y_train[hospital_idx], "Hospital"),
-    MultiClassNode(2, X_train[bank_idx], y_train[bank_idx], "Bank"),
-    MultiClassNode(3, X_train[campus_idx], y_train[campus_idx], "Campus")
+    MultiClassNode(1, X_train[hospital_idx], y_train[hospital_idx], "Hospital", lr=node_lr),
+    MultiClassNode(2, X_train[bank_idx], y_train[bank_idx], "Bank", lr=node_lr),
+    MultiClassNode(3, X_train[campus_idx], y_train[campus_idx], "Campus", lr=node_lr)
 ]
 
-global_model = MultiClassIDS()
+global_model = MultiClassIDS(input_dim=n_features)
 history = []
 ROUNDS = 15
 
@@ -101,7 +139,7 @@ print("\n===== FEDERATED TRAINING ON NON-IID DATA =====")
 for round_num in range(1, ROUNDS+1):
     global_weights = global_model.get_weights()
     for node in nodes: node.set_weights(global_weights)
-    for node in nodes: node.train_local(epochs=3)
+    for node in nodes: node.train_local(epochs=local_epochs)
 
     averaged = fed_avg([node.get_weights() for node in nodes])
     global_model.set_weights(averaged)
@@ -113,13 +151,13 @@ for round_num in range(1, ROUNDS+1):
     history.append({"round": round_num, "macro_f1": f1})
     print(f"Round {round_num:02d} | Global Macro F1: {f1:.4f}")
 
-print("\n===== FINAL REPORT (NON-IID) =====")
+print(f"\n===== FINAL REPORT (NON-IID, {args.dataset}) =====")
 global_model.eval()
 with torch.no_grad():
     final_preds = global_model(torch.FloatTensor(X_test)).argmax(dim=1)
 print(classification_report(y_test, final_preds.numpy(), target_names=CLASS_NAMES))
 
-torch.save(global_model.state_dict(), "models/federated_noniid_model.pth")
-with open("models/federated_noniid_history.json", "w") as f:
+torch.save(global_model.state_dict(), OUT_MODEL)
+with open(OUT_HISTORY, "w") as f:
     json.dump(history, f)
-print("Non-IID federated model saved!")
+print(f"Non-IID federated model saved to {OUT_MODEL}")
