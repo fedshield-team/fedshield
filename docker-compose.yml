@@ -1,4 +1,7 @@
 services:
+  # One-shot federated training job: runs 10 rounds, saves the model, exits.
+  # NOT a persistent service - restart policy is "no" on purpose. This is a
+  # training run, not a server that should loop forever.
   server:
     build: .
     container_name: fedshield_server
@@ -10,7 +13,7 @@ services:
     volumes:
       - ./models:/app/models
       - ./data:/app/data
-    restart: on-failure
+    restart: "no"
     healthcheck:
       test: ["CMD", "python", "-c", "import socket; s=socket.create_connection(('localhost',8080),2)"]
       interval: 5s
@@ -32,7 +35,7 @@ services:
     volumes:
       - ./models:/app/models
       - ./data:/app/data
-    restart: on-failure
+    restart: "no"
 
   node2:
     build: .
@@ -48,7 +51,7 @@ services:
     volumes:
       - ./models:/app/models
       - ./data:/app/data
-    restart: on-failure
+    restart: "no"
 
   node3:
     build: .
@@ -64,8 +67,9 @@ services:
     volumes:
       - ./models:/app/models
       - ./data:/app/data
-    restart: on-failure
+    restart: "no"
 
+  # Persistent services below - these are what should actually stay running.
   api:
     build: .
     container_name: fedshield_api
@@ -77,7 +81,12 @@ services:
     volumes:
       - ./models:/app/models
       - ./data:/app/data
-    restart: always
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/docs')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   dashboard:
     build: .
@@ -90,6 +99,4 @@ services:
     volumes:
       - ./models:/app/models
       - ./data:/app/data
-    restart: always
-    depends_on:
-      - server
+    restart: unless-stopped
