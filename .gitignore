@@ -1,13 +1,28 @@
+# Virtual environment
 venv/
+.venv/
+
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*.pyo
+
+# Environment / secrets
 .env
-data/KDDTrain+.txt
-data/KDDTest+.txt
+.env.*
+!.env.example
+
+# Dataset / local data
+data/
+
+# ML artifacts
 *.npy
 models/*.pth
-.DS_Store
-data/
+
+# Databases / local runtime data
 fedshield.db
 models/fedshield_logs.db
 
+# OS
+.DS_Store
+Thumbs.db
