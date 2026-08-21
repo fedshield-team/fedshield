@@ -1,7 +1,8 @@
 services:
-  # One-shot federated training job: runs 10 rounds, saves the model, exits.
-  # NOT a persistent service - restart policy is "no" on purpose. This is a
-  # training run, not a server that should loop forever.
+  # ─────────────────────────────────────────────────────────────
+  # Federated Learning Server
+  # One-shot job: runs the configured training rounds and exits.
+  # ─────────────────────────────────────────────────────────────
   server:
     build: .
     container_name: fedshield_server
@@ -15,18 +16,27 @@ services:
       - ./data:/app/data
     restart: "no"
     healthcheck:
-      test: ["CMD", "python", "-c", "import socket; s=socket.create_connection(('localhost',8080),2)"]
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import socket; s=socket.create_connection(('localhost',8080),2); s.close()"
+        ]
       interval: 5s
       timeout: 5s
       retries: 10
       start_period: 10s
 
+  # ─────────────────────────────────────────────────────────────
+  # Federated Learning Client 1
+  # ─────────────────────────────────────────────────────────────
   node1:
     build: .
     container_name: fedshield_node1
     command: python nodes/flower_client.py 1
     environment:
-      - SERVER_ADDRESS=server:8080
+      SERVER_ADDRESS: server:8080
     depends_on:
       server:
         condition: service_healthy
@@ -37,12 +47,15 @@ services:
       - ./data:/app/data
     restart: "no"
 
+  # ─────────────────────────────────────────────────────────────
+  # Federated Learning Client 2
+  # ─────────────────────────────────────────────────────────────
   node2:
     build: .
     container_name: fedshield_node2
     command: python nodes/flower_client.py 2
     environment:
-      - SERVER_ADDRESS=server:8080
+      SERVER_ADDRESS: server:8080
     depends_on:
       server:
         condition: service_healthy
@@ -53,12 +66,15 @@ services:
       - ./data:/app/data
     restart: "no"
 
+  # ─────────────────────────────────────────────────────────────
+  # Federated Learning Client 3
+  # ─────────────────────────────────────────────────────────────
   node3:
     build: .
     container_name: fedshield_node3
     command: python nodes/flower_client.py 3
     environment:
-      - SERVER_ADDRESS=server:8080
+      SERVER_ADDRESS: server:8080
     depends_on:
       server:
         condition: service_healthy
@@ -69,13 +85,15 @@ services:
       - ./data:/app/data
     restart: "no"
 
-  # Persistent services below - these are what should actually stay running.
+  # ─────────────────────────────────────────────────────────────
+  # FastAPI Backend
+  # ─────────────────────────────────────────────────────────────
   api:
     build: .
     container_name: fedshield_api
     command: uvicorn api.main:app --host 0.0.0.0 --port 8000
-    ports:
-      - "8000:8000"
+    expose:
+      - "8000"
     env_file:
       - .env
     volumes:
@@ -83,20 +101,33 @@ services:
       - ./data:/app/data
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/docs')"]
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"
+        ]
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 10s
 
-  dashboard:
-    build: .
-    container_name: fedshield_dashboard
-    command: streamlit run dashboard/app.py --server.port 8501 --server.address 0.0.0.0
+  # ─────────────────────────────────────────────────────────────
+  # React/Vite Frontend
+  #
+  # This replaces the old Streamlit dashboard.
+  # Nginx serves the compiled React application and proxies
+  # /api and /auth requests to FastAPI.
+  # ─────────────────────────────────────────────────────────────
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    container_name: fedshield_web
     ports:
-      - "8501:8501"
-    env_file:
-      - .env
-    volumes:
-      - ./models:/app/models
-      - ./data:/app/data
+      - "3000:80"
+    depends_on:
+      api:
+        condition: service_healthy
     restart: unless-stopped

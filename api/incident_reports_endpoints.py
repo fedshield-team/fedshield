@@ -55,7 +55,7 @@ def create_incident_report(incident_id: str, body: IncidentReportRequest):
     or lazily from the dashboard the first time an analyst opens an incident."""
     report_text = generate_incident_report(
         incident_id=incident_id,
-        flow_stats=body.flow_stats.dict(),
+        flow_stats=body.flow_stats.model_dump(),
         prediction=body.prediction,
         confidence=body.confidence,
         shap_features=body.shap_features

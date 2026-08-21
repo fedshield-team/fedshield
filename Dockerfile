@@ -17,4 +17,4 @@ COPY . .
 
 EXPOSE 8000 8080 8501
 
-CMD ["python", "server/flower_server.py"]
+CMD ["sh", "-c", "uvicorn api.main:app --host 0.0.0.0 --port ${PORT:-8000}"]

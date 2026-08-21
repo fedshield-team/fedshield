@@ -7,6 +7,9 @@ import sys, os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from model import IntrusionDetector
 
+BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+MODELS_DIR = os.path.join(BASE, "models")
+
 # Track metrics across rounds
 round_metrics = []
 
@@ -19,10 +22,16 @@ def weighted_average(metrics: List[Tuple[int, Metrics]]) -> Metrics:
     return {"f1": avg_f1}
 
 def save_metrics():
-    with open("models/flower_history.json", "w") as f:
-        json.dump([{"round": i+1, "f1": m["f1"]} 
-                   for i, m in enumerate(round_metrics)], f)
-    print("Metrics saved to models/flower_history.json")
+    output_path = os.path.join(MODELS_DIR, "flower_history.json")
+
+    with open(output_path, "w") as f:
+        json.dump(
+            [{"round": i + 1, "f1": m["f1"]}
+             for i, m in enumerate(round_metrics)],
+            f
+        )
+
+    print(f"Metrics saved to {output_path}")
 
 def start_server(num_rounds=10, min_clients=3):
     strategy = fl.server.strategy.FedAvg(

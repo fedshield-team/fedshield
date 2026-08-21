@@ -13,6 +13,8 @@ import time
 import json
 import uuid
 
+BASE = os.path.dirname(os.path.abspath(__file__))
+
 from llm_incident_report import generate_incident_report, init_incident_reports_table
 from online_retrain import (
     init_retrain_buffer, log_retrain_sample, should_retrain,
@@ -47,7 +49,7 @@ class MultiClassIDS(nn.Module):
     def forward(self, x): return self.network(x)
 
 # ── Database ──────────────────────────────────────────────────────────────────
-DB_PATH = "models/fedshield_logs.db"
+DB_PATH = os.path.join(BASE, "models", "fedshield_logs.db")
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -135,7 +137,7 @@ def maybe_hot_reload_model():
             version_info = json.load(f)
         new_version = version_info.get("version")
         if new_version and new_version != current_model_version:
-            model.load_state_dict(torch.load("models/federated_noniid_model.pth"))
+            model.load_state_dict(torch.load(os.path.join(BASE, "models", "federated_noniid_model.pth"), map_location="cpu"))
             model.eval()
             current_model_version = new_version
             print(f"\n♻️  [online_retrain] Hot-reloaded model to version {new_version} "
@@ -145,16 +147,16 @@ def maybe_hot_reload_model():
 
 # ── Model + scaler ────────────────────────────────────────────────────────────
 model = MultiClassIDS()
-model.load_state_dict(torch.load("models/federated_noniid_model.pth"))
+model.load_state_dict(torch.load(os.path.join(BASE, "models", "federated_noniid_model.pth"), map_location="cpu"))
 model.eval()
 
-scaler = joblib.load("models/scaler_multiclass.pkl")
+scaler = joblib.load(os.path.join(BASE, "models", "scaler_multiclass.pkl"))
 print("Model + scaler loaded (federated_noniid_model.pth + scaler_multiclass.pkl)")
 
 # ── SHAP explainer (initialized once, reused for every detection) ────────────
 # Background sample drawn from training data so SHAP has a baseline to compare against.
 try:
-    _background_raw = np.load("data/X_train_mc.npy")[:100]
+    _background_raw = np.load(os.path.join(BASE, "data", "X_train_mc.npy"))[:100]
     _background_t = torch.FloatTensor(_background_raw)
     shap_explainer = shap.DeepExplainer(model, _background_t)
     print("SHAP DeepExplainer initialised (background: 100 samples from X_train_mc.npy)")
@@ -381,7 +383,7 @@ def classify_packet(pkt):
 
     # ── JSON snapshot every 5 packets (kept for dashboard compatibility) ───────
     if len(log) % 5 == 0:
-        with open("models/live_log.json", "w") as f:
+        with open(os.path.join(BASE, "models", "live_log.json"), "w") as f:
             json.dump(log[-200:], f)
 
     # ── Online retraining: periodic trigger + hot-reload checks ────────────────
@@ -401,7 +403,7 @@ try:
     sniff(prn=classify_packet, store=False, count=0)
 except KeyboardInterrupt:
     print("\nCapture stopped.")
-    with open("models/live_log.json", "w") as f:
+    with open(os.path.join(BASE, "models", "live_log.json"), "w") as f:
         json.dump(log[-200:], f)
     total = db_conn.execute("SELECT COUNT(*) FROM detections").fetchone()[0]
     attacks = db_conn.execute("SELECT COUNT(*) FROM detections WHERE tag='ATTACK'").fetchone()[0]

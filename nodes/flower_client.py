@@ -61,10 +61,13 @@ def start_client(node_id, server_address=None):
         # not localhost — 127.0.0.1 inside a container means "this container",
         # not the server container.
         server_address = os.environ.get("SERVER_ADDRESS", "server:8080")
-    X_train = np.load("data/X_train.npy")
-    y_train = np.load("data/y_train.npy")
-    X_test = np.load("data/X_test.npy")
-    y_test = np.load("data/y_test.npy")
+
+    BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    X_train = np.load(os.path.join(BASE, "data", "X_train.npy"))
+    y_train = np.load(os.path.join(BASE, "data", "y_train.npy"))
+    X_test = np.load(os.path.join(BASE, "data", "X_test.npy"))
+    y_test = np.load(os.path.join(BASE, "data", "y_test.npy"))
 
     # Split data by node
     n = len(X_train)
