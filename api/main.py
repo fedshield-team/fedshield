@@ -20,6 +20,7 @@ from prometheus_client import (
     CONTENT_TYPE_LATEST,
 )
 
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Config
 # ─────────────────────────────────────────────────────────────────────────────
@@ -124,15 +125,52 @@ oauth2_scheme = OAuth2PasswordBearer(
 )
 
 
+# Credentials are supplied through environment variables.
+# Passwords are never stored in source code.
+
+FEDSHIELD_USERNAME = os.getenv(
+    "FEDSHIELD_USERNAME",
+    "fedshield"
+)
+
+FEDSHIELD_PASSWORD = os.getenv(
+    "FEDSHIELD_PASSWORD"
+)
+
+ANALYST_USERNAME = os.getenv(
+    "ANALYST_USERNAME",
+    "analyst"
+)
+
+ANALYST_PASSWORD = os.getenv(
+    "ANALYST_PASSWORD"
+)
+
+
+if not FEDSHIELD_PASSWORD:
+    raise RuntimeError(
+        "FEDSHIELD_PASSWORD environment variable is required"
+    )
+
+if not ANALYST_PASSWORD:
+    raise RuntimeError(
+        "ANALYST_PASSWORD environment variable is required"
+    )
+
+
 USERS = {
-    "fedshield": {
-        "username": "fedshield",
-        "hashed_password": pwd_context.hash("shield2025"),
+    FEDSHIELD_USERNAME: {
+        "username": FEDSHIELD_USERNAME,
+        "hashed_password": pwd_context.hash(
+            FEDSHIELD_PASSWORD
+        ),
         "role": "admin",
     },
-    "analyst": {
-        "username": "analyst",
-        "hashed_password": pwd_context.hash("analyst2025"),
+    ANALYST_USERNAME: {
+        "username": ANALYST_USERNAME,
+        "hashed_password": pwd_context.hash(
+            ANALYST_PASSWORD
+        ),
         "role": "readonly",
     },
 }

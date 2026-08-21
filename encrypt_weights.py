@@ -1,154 +1,289 @@
-"""
-FedShield — AES-256 Weight Encryption
-Encrypts model weights before transmission between federated nodes and aggregator.
+"""FedShield — AES-256-GCM authenticated weight encryption."""
 
-Usage:
-    from encrypt_weights import encrypt_weights, decrypt_weights
-
-    # On sending node — encrypt before sending
-    encrypted = encrypt_weights(weights, key)
-
-    # On aggregator — decrypt after receiving
-    weights = decrypt_weights(encrypted, key)
-"""
-
-import os
-import io
-import torch
 import base64
+import io
+import os
+
+import torch
+
 from Crypto.Cipher import AES
-from Crypto.Util.Padding import pad, unpad
 from Crypto.Random import get_random_bytes
 
 
-# ── Key management ────────────────────────────────────────────────────────────
-KEY_FILE = "models/fedshield_aes.key"
+KEY_FILE = os.path.join(
+    "models",
+    "fedshield_aes.key"
+)
+
+NONCE_SIZE = 12
+TAG_SIZE = 16
+
 
 def generate_key() -> bytes:
-    """Generate a new 256-bit AES key and save it."""
-    key = get_random_bytes(32)  # 256-bit
-    os.makedirs("models", exist_ok=True)
+    """Generate a new 256-bit AES key."""
+
+    key = get_random_bytes(32)
+
+    os.makedirs(
+        os.path.dirname(KEY_FILE),
+        exist_ok=True
+    )
+
     with open(KEY_FILE, "wb") as f:
         f.write(key)
-    print(f"[Crypto] AES-256 key generated and saved to {KEY_FILE}")
+
+    try:
+        os.chmod(
+            KEY_FILE,
+            0o600
+        )
+    except OSError:
+        pass
+
+    print(
+        f"[Crypto] AES-256 key generated "
+        f"and saved to {KEY_FILE}"
+    )
+
     return key
+
 
 def load_key() -> bytes:
-    """Load the shared AES key. Generate one if it doesn't exist."""
+    """Load the shared AES-256 key."""
+
     if not os.path.exists(KEY_FILE):
         return generate_key()
+
     with open(KEY_FILE, "rb") as f:
         key = f.read()
+
     if len(key) != 32:
-        raise ValueError(f"Invalid key length: {len(key)} bytes (expected 32)")
+        raise ValueError(
+            f"Invalid key length: "
+            f"{len(key)} bytes "
+            f"(expected 32)"
+        )
+
     return key
 
 
-# ── Encrypt / Decrypt ─────────────────────────────────────────────────────────
-def encrypt_weights(weights: list, key: bytes) -> dict:
-    """
-    Encrypt a list of PyTorch weight tensors using AES-256-CBC.
+def _serialize(weights: list) -> bytes:
+    """Serialize tensors safely to CPU."""
 
-    Args:
-        weights: list of torch.Tensor (model.parameters())
-        key:     32-byte AES key
-
-    Returns:
-        dict with keys: iv (hex), ciphertext (base64), shape_info
-    """
-    # Serialize weights to bytes
     buffer = io.BytesIO()
-    torch.save(weights, buffer)
-    plaintext = buffer.getvalue()
 
-    # AES-256-CBC encryption
-    iv = get_random_bytes(16)
-    cipher = AES.new(key, AES.MODE_CBC, iv)
-    ciphertext = cipher.encrypt(pad(plaintext, AES.block_size))
+    torch.save(
+        [
+            w.detach().cpu()
+            for w in weights
+        ],
+        buffer
+    )
+
+    return buffer.getvalue()
+
+
+def encrypt_weights(
+    weights: list,
+    key: bytes
+) -> dict:
+    """Encrypt model weights using AES-256-GCM."""
+
+    if len(key) != 32:
+        raise ValueError(
+            "AES-256 requires a 32-byte key"
+        )
+
+    nonce = get_random_bytes(
+        NONCE_SIZE
+    )
+
+    cipher = AES.new(
+        key,
+        AES.MODE_GCM,
+        nonce=nonce,
+        mac_len=TAG_SIZE
+    )
+
+    ciphertext, tag = (
+        cipher.encrypt_and_digest(
+            _serialize(weights)
+        )
+    )
 
     return {
-        "iv":         iv.hex(),
-        "ciphertext": base64.b64encode(ciphertext).decode("utf-8"),
+        "version": 2,
+        "algorithm": "AES-256-GCM",
+        "nonce": base64.b64encode(
+            nonce
+        ).decode("ascii"),
+        "ciphertext": base64.b64encode(
+            ciphertext
+        ).decode("ascii"),
+        "tag": base64.b64encode(
+            tag
+        ).decode("ascii"),
         "num_layers": len(weights)
     }
 
 
-def decrypt_weights(payload: dict, key: bytes) -> list:
-    """
-    Decrypt AES-256-CBC encrypted weights back to a list of tensors.
+def decrypt_weights(
+    payload: dict,
+    key: bytes
+) -> list:
+    """Decrypt and authenticate encrypted model weights."""
 
-    Args:
-        payload: dict returned by encrypt_weights
-        key:     32-byte AES key
+    if len(key) != 32:
+        raise ValueError(
+            "AES-256 requires a 32-byte key"
+        )
 
-    Returns:
-        list of torch.Tensor
-    """
-    iv         = bytes.fromhex(payload["iv"])
-    ciphertext = base64.b64decode(payload["ciphertext"])
+    if payload.get("algorithm") != "AES-256-GCM":
+        raise ValueError(
+            "Unsupported or legacy encryption payload; "
+            "re-encrypt with AES-256-GCM"
+        )
 
-    cipher    = AES.new(key, AES.MODE_CBC, iv)
-    plaintext = unpad(cipher.decrypt(ciphertext), AES.block_size)
+    try:
 
-    buffer  = io.BytesIO(plaintext)
-    weights = torch.load(buffer, weights_only=False)
-    return weights
+        nonce = base64.b64decode(
+            payload["nonce"]
+        )
+
+        ciphertext = base64.b64decode(
+            payload["ciphertext"]
+        )
+
+        tag = base64.b64decode(
+            payload["tag"]
+        )
+
+    except (
+        KeyError,
+        ValueError
+    ) as e:
+
+        raise ValueError(
+            "Malformed encrypted payload"
+        ) from e
+
+    cipher = AES.new(
+        key,
+        AES.MODE_GCM,
+        nonce=nonce,
+        mac_len=len(tag)
+    )
+
+    try:
+
+        plaintext = (
+            cipher.decrypt_and_verify(
+                ciphertext,
+                tag
+            )
+        )
+
+    except ValueError as e:
+
+        raise ValueError(
+            "Encrypted weights failed "
+            "authentication or were tampered with"
+        ) from e
+
+    return torch.load(
+        io.BytesIO(plaintext),
+        map_location="cpu",
+        weights_only=True
+    )
 
 
-# ── Convenience wrappers for federated nodes ──────────────────────────────────
 def secure_send(weights: list) -> dict:
-    """Encrypt weights using the shared key. Call this before sending."""
-    key = load_key()
-    payload = encrypt_weights(weights, key)
-    print(f"[Crypto] Weights encrypted — {len(payload['ciphertext'])} chars, IV: {payload['iv'][:8]}...")
-    return payload
+    """Encrypt weights using the shared key."""
+
+    return encrypt_weights(
+        weights,
+        load_key()
+    )
 
 
 def secure_receive(payload: dict) -> list:
-    """Decrypt weights using the shared key. Call this after receiving."""
-    key = load_key()
-    weights = decrypt_weights(payload, key)
-    print(f"[Crypto] Weights decrypted — {payload['num_layers']} layers restored")
-    return weights
+    """Decrypt weights using the shared key."""
 
-
-# ── Self-test ─────────────────────────────────────────────────────────────────
-if __name__ == "__main__":
-    import torch.nn as nn
-
-    print("=" * 50)
-    print("FedShield AES-256 Weight Encryption — Self Test")
-    print("=" * 50)
-
-    # Build a small test model
-    model = nn.Sequential(nn.Linear(41, 128), nn.ReLU(), nn.Linear(128, 5))
-    original_weights = [p.data.clone() for p in model.parameters()]
-
-    # Generate key
-    key = generate_key()
-    print(f"\n[Key] {key.hex()[:32]}... ({len(key)*8}-bit)")
-
-    # Encrypt
-    payload = encrypt_weights(original_weights, key)
-    print(f"\n[Encrypt] IV:         {payload['iv']}")
-    print(f"[Encrypt] Ciphertext: {payload['ciphertext'][:64]}...")
-    print(f"[Encrypt] Layers:     {payload['num_layers']}")
-
-    # Decrypt
-    recovered = decrypt_weights(payload, key)
-
-    # Verify
-    all_match = all(
-        torch.equal(orig, rec)
-        for orig, rec in zip(original_weights, recovered)
+    return decrypt_weights(
+        payload,
+        load_key()
     )
 
-    print(f"\n[Verify] All weights match after decrypt: {all_match}")
-    print("\n✅ AES-256 encryption working correctly!" if all_match else "\n❌ MISMATCH — something went wrong")
 
-    # Show overhead
-    import sys
-    original_size = sum(p.numel() * 4 for p in model.parameters())
-    encrypted_size = len(payload["ciphertext"])
-    print(f"\n[Overhead] Original: {original_size:,} bytes | Encrypted: {encrypted_size:,} bytes")
-    print("=" * 50)
+if __name__ == "__main__":
+
+    import torch.nn as nn
+
+    print("=" * 60)
+    print("FedShield AES-256-GCM Self Test")
+    print("=" * 60)
+
+    model = nn.Sequential(
+        nn.Linear(41, 16),
+        nn.ReLU(),
+        nn.Linear(16, 5)
+    )
+
+    original = [
+        p.detach().clone()
+        for p in model.parameters()
+    ]
+
+    key = generate_key()
+
+    payload = encrypt_weights(
+        original,
+        key
+    )
+
+    recovered = decrypt_weights(
+        payload,
+        key
+    )
+
+    ok = all(
+        torch.equal(a, b)
+        for a, b in zip(
+            original,
+            recovered
+        )
+    )
+
+    print(
+        f"AES-256-GCM round-trip: "
+        f"{'PASS' if ok else 'FAIL'}"
+    )
+
+    # Tamper test
+    tampered = dict(payload)
+
+    tampered["ciphertext"] = (
+        tampered["ciphertext"][:-2]
+        + (
+            "AA"
+            if tampered["ciphertext"][-2:] != "AA"
+            else "BB"
+        )
+    )
+
+    try:
+
+        decrypt_weights(
+            tampered,
+            key
+        )
+
+        print(
+            "Tamper detection: FAIL"
+        )
+
+    except ValueError:
+
+        print(
+            "Tamper detection: PASS"
+        )

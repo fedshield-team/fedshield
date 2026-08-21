@@ -1,64 +1,261 @@
-import torch
-import numpy as np
-import shap
+"""FedShield — offline SHAP feature-importance analysis."""
+
 import json
+import os
+
+import numpy as np
+import torch
+import shap
+
 from model import IntrusionDetector
 
-# Load model and data
-model = IntrusionDetector()
-model.load_state_dict(torch.load("models/federated_model.pth"))
-model.eval()
 
-X_test = np.load("data/X_test.npy")
-
-FEATURE_NAMES = [
-    'duration','protocol_type','service','flag','src_bytes','dst_bytes',
-    'land','wrong_fragment','urgent','hot','num_failed_logins','logged_in',
-    'num_compromised','root_shell','su_attempted','num_root','num_file_creations',
-    'num_shells','num_access_files','num_outbound_cmds','is_host_login',
-    'is_guest_login','count','srv_count','serror_rate','srv_serror_rate',
-    'rerror_rate','srv_rerror_rate','same_srv_rate','diff_srv_rate',
-    'srv_diff_host_rate','dst_host_count','dst_host_srv_count',
-    'dst_host_same_srv_rate','dst_host_diff_srv_rate',
-    'dst_host_same_src_port_rate','dst_host_srv_diff_host_rate',
-    'dst_host_serror_rate','dst_host_srv_serror_rate',
-    'dst_host_rerror_rate','dst_host_srv_rerror_rate'
-]
-
-# Use 100 background samples for SHAP
-background = torch.FloatTensor(X_test[:100])
-test_samples = torch.FloatTensor(X_test[100:200])
-
-def model_predict(x):
-    x_tensor = torch.FloatTensor(x)
-    with torch.no_grad():
-        return model(x_tensor).numpy()
-
-print("Computing SHAP values... (takes ~1 min)")
-explainer = shap.KernelExplainer(model_predict, background.numpy())
-shap_values = explainer.shap_values(test_samples.numpy(), nsamples=100)
-
-# Top 10 most important features
-mean_abs_shap = np.abs(shap_values).mean(axis=0).flatten()
-feature_importance = sorted(
-    zip(FEATURE_NAMES, mean_abs_shap),
-    key=lambda x: x[1],
-    reverse=True
+BASE = os.path.dirname(
+    os.path.abspath(__file__)
 )
 
-print("\n===== TOP 10 FEATURES DRIVING ATTACK DETECTION =====")
-for i, (feat, score) in enumerate(feature_importance[:10]):
-    print(f"{i+1:2d}. {feat:35s} SHAP: {score:.4f}")
+MODEL_PATH = os.path.join(
+    BASE,
+    "models",
+    "federated_model.pth"
+)
 
-# Save results
-results = {
-    "feature_importance": [
-        {"feature": f, "shap_score": float(s)} 
-        for f, s in feature_importance
-    ]
-}
-with open("models/shap_results.json", "w") as f:
-    json.dump(results, f, indent=2)
+X_TEST_PATH = os.path.join(
+    BASE,
+    "data",
+    "X_test.npy"
+)
 
-print("\nSHAP results saved to models/shap_results.json")
-print("This explains WHY the model flags packets as attacks.")
+OUTPUT_PATH = os.path.join(
+    BASE,
+    "models",
+    "shap_results.json"
+)
+
+
+FEATURE_NAMES = [
+    "duration",
+    "protocol_type",
+    "service",
+    "flag",
+    "src_bytes",
+    "dst_bytes",
+    "land",
+    "wrong_fragment",
+    "urgent",
+    "hot",
+    "num_failed_logins",
+    "logged_in",
+    "num_compromised",
+    "root_shell",
+    "su_attempted",
+    "num_root",
+    "num_file_creations",
+    "num_shells",
+    "num_access_files",
+    "num_outbound_cmds",
+    "is_host_login",
+    "is_guest_login",
+    "count",
+    "srv_count",
+    "serror_rate",
+    "srv_serror_rate",
+    "rerror_rate",
+    "srv_rerror_rate",
+    "same_srv_rate",
+    "diff_srv_rate",
+    "srv_diff_host_rate",
+    "dst_host_count",
+    "dst_host_srv_count",
+    "dst_host_same_srv_rate",
+    "dst_host_diff_srv_rate",
+    "dst_host_same_src_port_rate",
+    "dst_host_srv_diff_host_rate",
+    "dst_host_serror_rate",
+    "dst_host_srv_serror_rate",
+    "dst_host_rerror_rate",
+    "dst_host_srv_rerror_rate"
+]
+
+
+def main():
+
+    model = IntrusionDetector()
+
+    state = torch.load(
+        MODEL_PATH,
+        map_location="cpu",
+        weights_only=True
+    )
+
+    model.load_state_dict(
+        state
+    )
+
+    model.eval()
+
+    X_test = np.load(
+        X_TEST_PATH
+    )
+
+    if (
+        X_test.ndim != 2
+        or
+        X_test.shape[1]
+        != len(FEATURE_NAMES)
+    ):
+
+        raise ValueError(
+            f"Expected X_test with "
+            f"{len(FEATURE_NAMES)} features, "
+            f"got {X_test.shape}"
+        )
+
+    background = torch.as_tensor(
+        X_test[:100],
+        dtype=torch.float32
+    )
+
+    samples = torch.as_tensor(
+        X_test[100:200],
+        dtype=torch.float32
+    )
+
+    def predict(x):
+
+        with torch.no_grad():
+
+            return model(
+                torch.as_tensor(
+                    x,
+                    dtype=torch.float32
+                )
+            ).cpu().numpy()
+
+    print(
+        "Computing SHAP values..."
+    )
+
+    explainer = shap.KernelExplainer(
+        predict,
+        background.numpy()
+    )
+
+    values = explainer.shap_values(
+        samples.numpy(),
+        nsamples=100
+    )
+
+    if isinstance(values, list):
+
+        arr = np.stack(
+            [
+                np.asarray(v)
+                for v in values
+            ],
+            axis=-1
+        )
+
+        mean_abs = np.abs(arr).mean(
+            axis=(0, 2)
+        )
+
+    else:
+
+        arr = np.asarray(values)
+
+        if arr.ndim == 2:
+
+            mean_abs = np.abs(
+                arr
+            ).mean(axis=0)
+
+        elif (
+            arr.ndim == 3
+            and
+            arr.shape[1]
+            == len(FEATURE_NAMES)
+        ):
+
+            mean_abs = np.abs(
+                arr
+            ).mean(axis=(0, 2))
+
+        elif (
+            arr.ndim == 3
+            and
+            arr.shape[2]
+            == len(FEATURE_NAMES)
+        ):
+
+            mean_abs = np.abs(
+                arr
+            ).mean(axis=(0, 1))
+
+        else:
+
+            raise ValueError(
+                f"Unsupported SHAP output shape: "
+                f"{arr.shape}"
+            )
+
+    importance = sorted(
+        zip(
+            FEATURE_NAMES,
+            mean_abs.tolist()
+        ),
+        key=lambda x: x[1],
+        reverse=True
+    )
+
+    print(
+        "\n===== TOP 10 FEATURES ====="
+    )
+
+    for i, (name, score) in enumerate(
+        importance[:10],
+        1
+    ):
+
+        print(
+            f"{i:2d}. "
+            f"{name:35s} "
+            f"SHAP: {score:.4f}"
+        )
+
+    os.makedirs(
+        os.path.dirname(
+            OUTPUT_PATH
+        ),
+        exist_ok=True
+    )
+
+    with open(
+        OUTPUT_PATH,
+        "w",
+        encoding="utf-8"
+    ) as f:
+
+        json.dump(
+            {
+                "feature_importance": [
+                    {
+                        "feature": name,
+                        "shap_score": float(score)
+                    }
+                    for name, score
+                    in importance
+                ]
+            },
+            f,
+            indent=2
+        )
+
+    print(
+        f"\nSHAP results saved to "
+        f"{OUTPUT_PATH}"
+    )
+
+
+if __name__ == "__main__":
+    main()

@@ -1,67 +1,235 @@
+import json
+import os
+
+import numpy as np
 import torch
 import torch.nn as nn
-import numpy as np
-from torch.utils.data import DataLoader, TensorDataset
-from sklearn.metrics import f1_score, classification_report
+from sklearn.metrics import (
+    classification_report,
+    f1_score
+)
+from torch.utils.data import (
+    DataLoader,
+    TensorDataset
+)
+
 from model import IntrusionDetector
-import json
 
-# Load data
-X_train = np.load("data/X_train.npy")
-X_test = np.load("data/X_test.npy")
-y_train = np.load("data/y_train.npy")
-y_test = np.load("data/y_test.npy")
 
-# Convert to tensors
-X_train_t = torch.FloatTensor(X_train)
-y_train_t = torch.FloatTensor(y_train).unsqueeze(1)
-X_test_t = torch.FloatTensor(X_test)
-y_test_t = torch.FloatTensor(y_test).unsqueeze(1)
+BASE_DIR = os.path.dirname(
+    os.path.abspath(__file__)
+)
 
-# DataLoader
-dataset = TensorDataset(X_train_t, y_train_t)
-loader = DataLoader(dataset, batch_size=256, shuffle=True)
+DATA_DIR = os.path.join(
+    BASE_DIR,
+    "data"
+)
 
-# Model
-model = IntrusionDetector()
-optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
-criterion = nn.BCELoss()
+MODELS_DIR = os.path.join(
+    BASE_DIR,
+    "models"
+)
 
-# Training loop
-print("Training centralized baseline...")
+os.makedirs(
+    MODELS_DIR,
+    exist_ok=True
+)
+
+
+X_train = np.load(
+    os.path.join(
+        DATA_DIR,
+        "X_train.npy"
+    )
+)
+
+y_train = np.load(
+    os.path.join(
+        DATA_DIR,
+        "y_train.npy"
+    )
+)
+
+X_test = np.load(
+    os.path.join(
+        DATA_DIR,
+        "X_test.npy"
+    )
+)
+
+y_test = np.load(
+    os.path.join(
+        DATA_DIR,
+        "y_test.npy"
+    )
+)
+
+
+input_dim = X_train.shape[1]
+
+
+X_train_t = torch.as_tensor(
+    X_train,
+    dtype=torch.float32
+)
+
+y_train_t = torch.as_tensor(
+    y_train,
+    dtype=torch.float32
+).view(-1, 1)
+
+X_test_t = torch.as_tensor(
+    X_test,
+    dtype=torch.float32
+)
+
+
+loader = DataLoader(
+    TensorDataset(
+        X_train_t,
+        y_train_t
+    ),
+    batch_size=256,
+    shuffle=True
+)
+
+
+model = IntrusionDetector(
+    input_dim=input_dim
+)
+
+optimizer = torch.optim.Adam(
+    model.parameters(),
+    lr=0.001
+)
+
+criterion = nn.BCEWithLogitsLoss()
+
+
 history = []
 
-for epoch in range(20):
+EPOCHS = 20
+
+
+print(
+    "Training centralized baseline..."
+)
+
+
+for epoch in range(
+    1,
+    EPOCHS + 1
+):
+
     model.train()
-    total_loss = 0
+
+    total_loss = 0.0
+    batches = 0
+
     for X_batch, y_batch in loader:
+
         optimizer.zero_grad()
-        preds = model(X_batch)
-        loss = criterion(preds, y_batch)
+
+        logits = model(
+            X_batch
+        )
+
+        loss = criterion(
+            logits,
+            y_batch
+        )
+
         loss.backward()
         optimizer.step()
+
         total_loss += loss.item()
-    
-    # Evaluate
+        batches += 1
+
+    avg_loss = (
+        total_loss /
+        max(batches, 1)
+    )
+
     model.eval()
+
     with torch.no_grad():
-        test_preds = model(X_test_t)
-        test_preds_binary = (test_preds > 0.5).float()
-        f1 = f1_score(y_test_t.numpy(), test_preds_binary.numpy())
-        avg_loss = total_loss / len(loader)
-        history.append({"epoch": epoch+1, "loss": avg_loss, "f1": f1})
-        print(f"Epoch {epoch+1:02d} | Loss: {avg_loss:.4f} | F1: {f1:.4f}")
 
-# Final report
-model.eval()
-with torch.no_grad():
-    final_preds = (model(X_test_t) > 0.5).float()
-    print("\n--- FINAL CLASSIFICATION REPORT ---")
-    print(classification_report(y_test_t.numpy(), final_preds.numpy(),
-                                 target_names=["Normal", "Attack"]))
+        probabilities = torch.sigmoid(
+            model(X_test_t)
+        )
 
-# Save model and history
-torch.save(model.state_dict(), "models/baseline_model.pth")
-with open("models/baseline_history.json", "w") as f:
-    json.dump(history, f)
-print("Baseline model saved to models/baseline_model.pth")
+        predictions = (
+            probabilities >= 0.5
+        ).long().view(-1)
+
+    f1 = f1_score(
+        y_test,
+        predictions.numpy(),
+        zero_division=0
+    )
+
+    history.append(
+        {
+            "epoch": epoch,
+            "loss": avg_loss,
+            "f1": float(f1)
+        }
+    )
+
+    print(
+        f"Epoch {epoch:02d} | "
+        f"Loss: {avg_loss:.4f} | "
+        f"F1: {f1:.4f}"
+    )
+
+
+print(
+    "\n===== FINAL CLASSIFICATION REPORT ====="
+)
+
+
+print(
+    classification_report(
+        y_test,
+        predictions.numpy(),
+        target_names=[
+            "Normal",
+            "Attack"
+        ],
+        zero_division=0
+    )
+)
+
+
+model_path = os.path.join(
+    MODELS_DIR,
+    "baseline_model.pth"
+)
+
+history_path = os.path.join(
+    MODELS_DIR,
+    "baseline_history.json"
+)
+
+
+torch.save(
+    model.state_dict(),
+    model_path
+)
+
+with open(
+    history_path,
+    "w",
+    encoding="utf-8"
+) as f:
+
+    json.dump(
+        history,
+        f,
+        indent=2
+    )
+
+
+print(
+    f"Baseline model saved to {model_path}"
+)

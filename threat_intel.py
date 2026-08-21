@@ -1,619 +1,549 @@
-"""
-FedShield — AbuseIPDB Threat Intelligence Integration
+"""FedShield — AbuseIPDB threat-intelligence enrichment."""
 
-Cross-references blocked IPs against the AbuseIPDB threat database.
-Automatically called when live_capture.py blocks an IP.
-
-Usage:
-    from threat_intel import check_ip, enrich_blocked_ips
-
-    result = check_ip("8.8.8.8")
-
-Configuration:
-    ABUSEIPDB_API_KEY must be provided through the environment.
-
-The API key is intentionally NOT stored in source code.
-
-Example .env:
-    ABUSEIPDB_API_KEY=your-abuseipdb-api-key
-"""
-
+import ipaddress
 import json
 import os
 import sqlite3
 import time
+
 from datetime import datetime
 from typing import Any
 
 import requests
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Configuration
-# ──────────────────────────────────────────────────────────────────────────────
-
-BASE = os.path.dirname(os.path.abspath(__file__))
+BASE = os.path.dirname(
+    os.path.abspath(__file__)
+)
 
 DB_PATH = os.path.join(
     BASE,
     "models",
-    "fedshield_logs.db",
+    "fedshield_logs.db"
 )
 
 CACHE_FILE = os.path.join(
     BASE,
     "models",
-    "threat_intel_cache.json",
+    "threat_intel_cache.json"
 )
 
-API_URL = "https://api.abuseipdb.com/api/v2/check"
+API_URL = (
+    "https://api.abuseipdb.com/api/v2/check"
+)
 
-# AbuseIPDB looks this many days back when calculating threat reputation.
 MAX_AGE = 90
 
-# Cache results for 24 hours to reduce API calls.
 CACHE_TTL_HOURS = 24
 
-# Small delay between requests to be respectful of API rate limits.
 REQUEST_DELAY_SECONDS = 0.5
 
 
-def get_api_key() -> str | None:
-    """
-    Read the AbuseIPDB API key from the environment.
+def get_api_key():
 
-    Returns:
-        The API key if configured, otherwise None.
-
-    We intentionally do not raise an exception here because threat
-    intelligence is an optional enrichment layer. FedShield's core
-    detection pipeline should still be able to run without it.
-    """
-    return os.getenv("ABUSEIPDB_API_KEY")
+    return os.getenv(
+        "ABUSEIPDB_API_KEY"
+    )
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Cache
-# ──────────────────────────────────────────────────────────────────────────────
+def load_cache():
 
-def load_cache() -> dict:
-    """Load the local threat-intelligence cache."""
     try:
-        if not os.path.exists(CACHE_FILE):
-            return {}
 
-        with open(CACHE_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        with open(
+            CACHE_FILE,
+            encoding="utf-8"
+        ) as f:
 
-        return data if isinstance(data, dict) else {}
+            value = json.load(f)
 
-    except (OSError, json.JSONDecodeError):
+        return (
+            value
+            if isinstance(value, dict)
+            else {}
+        )
+
+    except (
+        OSError,
+        json.JSONDecodeError
+    ):
+
         return {}
 
 
-def save_cache(cache: dict) -> None:
-    """Persist the local threat-intelligence cache."""
-    try:
-        os.makedirs(os.path.dirname(CACHE_FILE), exist_ok=True)
+def save_cache(cache):
 
-        with open(CACHE_FILE, "w", encoding="utf-8") as f:
-            json.dump(cache, f, indent=2)
+    try:
+
+        os.makedirs(
+            os.path.dirname(
+                CACHE_FILE
+            ),
+            exist_ok=True
+        )
+
+        tmp = (
+            CACHE_FILE
+            + ".tmp"
+        )
+
+        with open(
+            tmp,
+            "w",
+            encoding="utf-8"
+        ) as f:
+
+            json.dump(
+                cache,
+                f,
+                indent=2
+            )
+
+        os.replace(
+            tmp,
+            CACHE_FILE
+        )
 
     except OSError as e:
-        print(f"[ThreatIntel] Cache write failed: {e}")
+
+        print(
+            f"[ThreatIntel] "
+            f"Cache write failed: {e}"
+        )
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# IP helpers
-# ──────────────────────────────────────────────────────────────────────────────
+def is_private_or_local_ip(
+    ip
+):
 
-def is_private_or_local_ip(ip: str) -> bool:
-    """
-    Detect common private/local IPv4 addresses.
+    try:
 
-    AbuseIPDB cannot provide meaningful global reputation information
-    for private addresses, so these are skipped.
-    """
-    private_prefixes = (
-        "192.168.",
-        "10.",
-        "172.16.",
-        "172.17.",
-        "172.18.",
-        "172.19.",
-        "172.20.",
-        "172.21.",
-        "172.22.",
-        "172.23.",
-        "172.24.",
-        "172.25.",
-        "172.26.",
-        "172.27.",
-        "172.28.",
-        "172.29.",
-        "172.30.",
-        "172.31.",
-        "127.",
-        "0.",
+        addr = ipaddress.ip_address(
+            ip.strip()
+        )
+
+        return (
+            addr.is_private
+            or addr.is_loopback
+            or addr.is_link_local
+            or addr.is_unspecified
+            or addr.is_multicast
+        )
+
+    except ValueError:
+
+        return False
+
+
+def _base_result(
+    ip,
+    **kwargs
+):
+
+    result = {
+        "ip": ip,
+        "abuse_score": -1,
+        "total_reports": -1,
+        "country": "Unknown",
+        "isp": "Unknown",
+        "domain": "",
+        "is_tor": False,
+        "is_known_attacker": False,
+        "last_reported": None,
+        "cached": False
+    }
+
+    result.update(
+        kwargs
     )
 
-    return any(ip.startswith(prefix) for prefix in private_prefixes)
+    return result
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# AbuseIPDB lookup
-# ──────────────────────────────────────────────────────────────────────────────
-
-def check_ip(ip: str) -> dict[str, Any]:
-    """
-    Query AbuseIPDB for threat intelligence on an IP address.
-
-    Results are cached for 24 hours to reduce unnecessary API calls.
-
-    Returns:
-        {
-            ip,
-            abuse_score,
-            total_reports,
-            country,
-            isp,
-            domain,
-            is_tor,
-            is_known_attacker,
-            last_reported,
-            cached
-        }
-    """
+def check_ip(
+    ip: str
+) -> dict[str, Any]:
 
     ip = ip.strip()
 
-    # ── Validate input ────────────────────────────────────────────────────────
-    if not ip:
-        return {
-            "ip": ip,
-            "abuse_score": -1,
-            "total_reports": -1,
-            "country": "Unknown",
-            "isp": "Unknown",
-            "domain": "",
-            "is_tor": False,
-            "is_known_attacker": False,
-            "last_reported": None,
-            "cached": False,
-            "error": "IP address is empty",
-        }
+    try:
 
-    # ── Skip private/local addresses ──────────────────────────────────────────
-    if is_private_or_local_ip(ip):
-        return {
-            "ip": ip,
-            "abuse_score": 0,
-            "total_reports": 0,
-            "country": "LOCAL",
-            "isp": "Private Network",
-            "domain": "",
-            "is_tor": False,
-            "is_known_attacker": False,
-            "last_reported": None,
-            "cached": False,
-            "note": "Private/local IP — not checked",
-        }
+        ipaddress.ip_address(
+            ip
+        )
 
-    # ── Read API key ──────────────────────────────────────────────────────────
+    except ValueError:
+
+        return _base_result(
+            ip,
+            error="Invalid IP address"
+        )
+
+    if is_private_or_local_ip(
+        ip
+    ):
+
+        return _base_result(
+            ip,
+            abuse_score=0,
+            total_reports=0,
+            country="LOCAL",
+            isp="Private/Local Network",
+            note="Private/local IP — not checked"
+        )
+
     api_key = get_api_key()
 
     if not api_key:
-        return {
-            "ip": ip,
-            "abuse_score": -1,
-            "total_reports": -1,
-            "country": "Unknown",
-            "isp": "Unknown",
-            "domain": "",
-            "is_tor": False,
-            "is_known_attacker": False,
-            "last_reported": None,
-            "cached": False,
-            "error": "ABUSEIPDB_API_KEY is not configured",
-        }
 
-    # ── Check cache ───────────────────────────────────────────────────────────
+        return _base_result(
+            ip,
+            error=(
+                "ABUSEIPDB_API_KEY "
+                "is not configured"
+            )
+        )
+
     cache = load_cache()
 
-    if ip in cache:
-        entry = cache[ip]
+    entry = cache.get(
+        ip
+    )
 
-        cached_at = entry.get("cached_at", 0)
+    if entry:
 
         try:
+
             age_hours = (
-                time.time() - float(cached_at)
+                time.time()
+                - float(
+                    entry.get(
+                        "cached_at",
+                        0
+                    )
+                )
             ) / 3600
-        except (TypeError, ValueError):
-            age_hours = CACHE_TTL_HOURS + 1
 
-        if age_hours < CACHE_TTL_HOURS:
-            cached_result = dict(entry)
-            cached_result["cached"] = True
-            return cached_result
+            if age_hours < CACHE_TTL_HOURS:
 
-    # ── Query AbuseIPDB ───────────────────────────────────────────────────────
+                result = dict(
+                    entry
+                )
+
+                result["cached"] = True
+
+                return result
+
+        except (
+            TypeError,
+            ValueError
+        ):
+
+            pass
+
     try:
+
         response = requests.get(
             API_URL,
             headers={
                 "Key": api_key,
-                "Accept": "application/json",
+                "Accept": "application/json"
             },
             params={
                 "ipAddress": ip,
-                "maxAgeInDays": MAX_AGE,
+                "maxAgeInDays": MAX_AGE
             },
-            timeout=8,
+            timeout=8
         )
 
         response.raise_for_status()
 
-        payload = response.json()
-        data = payload.get("data", {})
-
-        abuse_score = data.get(
-            "abuseConfidenceScore",
-            0,
+        data = response.json().get(
+            "data",
+            {}
         )
 
-        result = {
-            "ip": ip,
-            "abuse_score": abuse_score,
-            "total_reports": data.get(
-                "totalReports",
-                0,
-            ),
-            "country": data.get(
-                "countryCode",
-                "Unknown",
-            ),
-            "isp": data.get(
-                "isp",
-                "Unknown",
-            ),
-            "domain": data.get(
-                "domain",
-                "",
-            ),
-            "is_tor": data.get(
-                "isTor",
-                False,
-            ),
-            "is_known_attacker": abuse_score >= 25,
-            "last_reported": data.get(
-                "lastReportedAt",
-                None,
-            ),
-            "cached": False,
-            "cached_at": time.time(),
-        }
+        score = int(
+            data.get(
+                "abuseConfidenceScore",
+                0
+            )
+            or 0
+        )
 
-        # Save successful lookup.
+        total_reports = int(
+            data.get(
+                "totalReports",
+                0
+            )
+            or 0
+        )
+
+        result = _base_result(
+            ip,
+
+            abuse_score=score,
+
+            total_reports=total_reports,
+
+            country=data.get(
+                "countryCode",
+                "Unknown"
+            ),
+
+            isp=data.get(
+                "isp",
+                "Unknown"
+            ),
+
+            domain=data.get(
+                "domain",
+                ""
+            ),
+
+            is_tor=bool(
+                data.get(
+                    "isTor",
+                    False
+                )
+            ),
+
+            is_known_attacker=(
+                score >= 25
+            ),
+
+            last_reported=data.get(
+                "lastReportedAt"
+            ),
+
+            cached=False,
+
+            cached_at=time.time()
+        )
+
         cache[ip] = result
-        save_cache(cache)
+
+        save_cache(
+            cache
+        )
 
         return result
 
     except requests.Timeout:
-        return {
-            "ip": ip,
-            "abuse_score": -1,
-            "total_reports": -1,
-            "country": "Unknown",
-            "isp": "Unknown",
-            "domain": "",
-            "is_tor": False,
-            "is_known_attacker": False,
-            "last_reported": None,
-            "cached": False,
-            "error": "AbuseIPDB request timed out",
-        }
+
+        return _base_result(
+            ip,
+            error=(
+                "AbuseIPDB request timed out"
+            )
+        )
 
     except requests.HTTPError as e:
-        return {
-            "ip": ip,
-            "abuse_score": -1,
-            "total_reports": -1,
-            "country": "Unknown",
-            "isp": "Unknown",
-            "domain": "",
-            "is_tor": False,
-            "is_known_attacker": False,
-            "last_reported": None,
-            "cached": False,
-            "error": f"AbuseIPDB HTTP error: {e}",
-        }
+
+        return _base_result(
+            ip,
+            error=(
+                f"AbuseIPDB HTTP error: {e}"
+            )
+        )
 
     except requests.RequestException as e:
-        return {
-            "ip": ip,
-            "abuse_score": -1,
-            "total_reports": -1,
-            "country": "Unknown",
-            "isp": "Unknown",
-            "domain": "",
-            "is_tor": False,
-            "is_known_attacker": False,
-            "last_reported": None,
-            "cached": False,
-            "error": f"AbuseIPDB request failed: {e}",
-        }
 
-    except (ValueError, KeyError, TypeError) as e:
-        return {
-            "ip": ip,
-            "abuse_score": -1,
-            "total_reports": -1,
-            "country": "Unknown",
-            "isp": "Unknown",
-            "domain": "",
-            "is_tor": False,
-            "is_known_attacker": False,
-            "last_reported": None,
-            "cached": False,
-            "error": f"Invalid AbuseIPDB response: {e}",
-        }
+        return _base_result(
+            ip,
+            error=(
+                f"AbuseIPDB request failed: {e}"
+            )
+        )
+
+    except (
+        ValueError,
+        KeyError,
+        TypeError
+    ) as e:
+
+        return _base_result(
+            ip,
+            error=(
+                f"Invalid AbuseIPDB response: {e}"
+            )
+        )
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Enrichment
-# ──────────────────────────────────────────────────────────────────────────────
-
-def enrich_blocked_ips() -> list[dict[str, Any]]:
-    """
-    Pull all blocked source IPs from SQLite and enrich them with
-    AbuseIPDB threat intelligence.
-
-    Returns:
-        List of threat-intelligence results.
-    """
+def enrich_blocked_ips():
 
     try:
-        conn = sqlite3.connect(DB_PATH)
 
-        rows = conn.execute(
-            """
-            SELECT DISTINCT src
-            FROM detections
-            WHERE blocked = 1
-              AND src IS NOT NULL
-              AND src != ''
-            """
-        ).fetchall()
+        with sqlite3.connect(
+            DB_PATH
+        ) as conn:
 
-        conn.close()
+            rows = conn.execute(
+                """
+                SELECT DISTINCT src
+                FROM detections
+                WHERE blocked=1
+                AND src IS NOT NULL
+                AND src != ''
+                """
+            ).fetchall()
 
     except sqlite3.Error as e:
-        print(f"[ThreatIntel] Database error: {e}")
+
+        print(
+            f"[ThreatIntel] "
+            f"Database error: {e}"
+        )
+
         return []
 
-    ips = [row[0] for row in rows]
+    ips = [
+        row[0]
+        for row in rows
+    ]
 
     if not ips:
+
         print(
-            "[ThreatIntel] No blocked IPs found in database."
+            "[ThreatIntel] "
+            "No blocked IPs found."
         )
+
         return []
 
     if not get_api_key():
-        print(
-            "[ThreatIntel] ABUSEIPDB_API_KEY is not configured. "
-            "Skipping external threat intelligence."
-        )
-        return []
 
-    print(
-        f"\n[ThreatIntel] Checking "
-        f"{len(ips)} blocked IP(s) against AbuseIPDB...\n"
-    )
+        print(
+            "[ThreatIntel] "
+            "ABUSEIPDB_API_KEY "
+            "is not configured."
+        )
+
+        return []
 
     results = []
 
-    for index, ip in enumerate(ips):
-        result = check_ip(ip)
-        results.append(result)
+    for i, ip in enumerate(
+        ips
+    ):
 
-        score = result.get("abuse_score", 0)
-        country = result.get("country", "?")
-        isp = result.get("isp", "?")
-        reports = result.get("total_reports", 0)
-
-        known = (
-            "⚠️ KNOWN ATTACKER"
-            if result.get("is_known_attacker")
-            else "✅ Clean"
+        result = check_ip(
+            ip
         )
 
-        tor = (
-            " | 🧅 TOR EXIT NODE"
-            if result.get("is_tor")
-            else ""
+        results.append(
+            result
         )
 
-        note = result.get("note", "")
-        error = result.get("error", "")
-
-        if note:
-            print(
-                f"  {ip:20} → {note}"
+        summary = (
+            result.get("note")
+            or result.get("error")
+            or (
+                f"Score "
+                f"{result['abuse_score']}/100 | "
+                f"Reports "
+                f"{result['total_reports']} | "
+                f"{result['country']}"
             )
+        )
 
-        elif error:
-            print(
-                f"  {ip:20} → ERROR: {error}"
+        print(
+            f"  {ip:40} -> "
+            f"{summary}"
+        )
+
+        if i < len(ips) - 1:
+
+            time.sleep(
+                REQUEST_DELAY_SECONDS
             )
-
-        else:
-            print(
-                f"  {ip:20} → "
-                f"Score: {score:3}/100 | "
-                f"Reports: {reports:4} | "
-                f"{country} | "
-                f"{isp[:30]} | "
-                f"{known}{tor}"
-            )
-
-        # Avoid unnecessary delay after the final request.
-        if index < len(ips) - 1:
-            time.sleep(REQUEST_DELAY_SECONDS)
 
     return results
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Human-readable report
-# ──────────────────────────────────────────────────────────────────────────────
+def print_threat_report(
+    results
+):
 
-def print_threat_report(results: list[dict[str, Any]]) -> None:
-    """Print a summary of threat-intelligence results."""
+    print(
+        "\n" + "=" * 60
+    )
 
-    print("\n" + "=" * 60)
-    print("FedShield — Threat Intelligence Report")
+    print(
+        "FedShield — "
+        "Threat Intelligence Report"
+    )
+
     print(
         f"Timestamp: "
-        f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        f"{datetime.now():%Y-%m-%d %H:%M:%S}"
     )
-    print("=" * 60)
 
-    known_attackers = [
-        result
-        for result in results
-        if result.get("is_known_attacker")
-    ]
+    print(
+        "=" * 60
+    )
 
-    tor_nodes = [
-        result
-        for result in results
-        if result.get("is_tor")
-    ]
-
-    errors = [
-        result
-        for result in results
-        if result.get("error")
-    ]
-
-    clean = [
-        result
-        for result in results
-        if (
-            not result.get("is_known_attacker")
-            and not result.get("is_tor")
-            and not result.get("error")
+    known = sum(
+        bool(
+            r.get(
+                "is_known_attacker"
+            )
         )
-    ]
-
-    print(
-        f"\n  Total IPs checked:    {len(results)}"
-    )
-    print(
-        f"  Known attackers:      {len(known_attackers)} 🔴"
-    )
-    print(
-        f"  TOR exit nodes:       {len(tor_nodes)} 🧅"
-    )
-    print(
-        f"  Clean / local:        {len(clean)} ✅"
-    )
-    print(
-        f"  Lookup errors:        {len(errors)} ⚠️"
+        for r in results
     )
 
-    if known_attackers:
-        print("\n  🔴 Known Malicious IPs:")
+    tor = sum(
+        bool(
+            r.get("is_tor")
+        )
+        for r in results
+    )
 
-        for result in known_attackers:
+    errors = sum(
+        bool(
+            r.get("error")
+        )
+        for r in results
+    )
+
+    print(
+        f"Total: {len(results)} | "
+        f"Known attackers: {known} | "
+        f"TOR: {tor} | "
+        f"Errors: {errors}"
+    )
+
+    for result in results:
+
+        if (
+            result.get(
+                "is_known_attacker"
+            )
+            or
+            result.get(
+                "is_tor"
+            )
+        ):
+
             print(
-                f"    {result['ip']:20} "
-                f"Score:{result['abuse_score']:3}/100 "
-                f"Reports:{result['total_reports']:4} "
-                f"{result['country']} — "
+                f"  {result['ip']} | "
+                f"score={result['abuse_score']} | "
+                f"reports={result['total_reports']} | "
+                f"{result['country']} | "
                 f"{result['isp']}"
             )
 
-    if tor_nodes:
-        print("\n  🧅 TOR Exit Nodes:")
+    print(
+        "=" * 60
+    )
 
-        for result in tor_nodes:
-            print(
-                f"    {result['ip']:20} "
-                f"{result['country']} — "
-                f"{result['isp']}"
-            )
-
-    if errors:
-        print("\n  ⚠️ Lookup Errors:")
-
-        for result in errors:
-            print(
-                f"    {result['ip']:20} "
-                f"{result.get('error', 'Unknown error')}"
-            )
-
-    print("=" * 60)
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Manual test
-# ──────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+
     results = enrich_blocked_ips()
 
     if results:
-        print_threat_report(results)
 
-    elif get_api_key():
-        # Manual test using a public IP.
-        #
-        # This does NOT mean the IP is malicious; it simply demonstrates
-        # that the AbuseIPDB lookup integration is reachable.
-        print(
-            "\n[Demo] No blocked IPs in DB — "
-            "testing AbuseIPDB integration..."
-        )
-
-        result = check_ip("8.8.8.8")
-
-        print(f"\n  IP:            {result['ip']}")
-        print(
-            f"  Abuse Score:   "
-            f"{result['abuse_score']}/100"
-        )
-        print(
-            f"  Total Reports: "
-            f"{result['total_reports']}"
-        )
-        print(
-            f"  Country:       "
-            f"{result['country']}"
-        )
-        print(
-            f"  ISP:            "
-            f"{result['isp']}"
-        )
-        print(
-            f"  Known Attack:  "
-            f"{result['is_known_attacker']}"
-        )
-        print(
-            f"  TOR Node:      "
-            f"{result['is_tor']}"
-        )
-
-        print("\n✅ AbuseIPDB integration working!")
-
-    else:
-        print(
-            "\n[ThreatIntel] AbuseIPDB integration is disabled."
-        )
-        print(
-            "Set ABUSEIPDB_API_KEY in your environment "
-            "to enable threat intelligence."
+        print_threat_report(
+            results
         )

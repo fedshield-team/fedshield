@@ -26,3 +26,13 @@ models/fedshield_logs.db
 # OS
 .DS_Store
 Thumbs.db
+
+# FedShield secrets / generated runtime files
+models/*.key
+models/live_log.json
+models/drift_log.json
+models/shap_results.json
+
+# Generated frontend/temp files
+rcApp.jsxcode
+websrcApp.jsx

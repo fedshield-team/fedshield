@@ -1,58 +1,180 @@
-import flwr as fl
-import torch
 import json
-from typing import List, Tuple, Optional, Dict
+import os
+from typing import Dict, List, Tuple
+
+import flwr as fl
 from flwr.common import Metrics
-import sys, os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from model import IntrusionDetector
 
-BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MODELS_DIR = os.path.join(BASE, "models")
 
-# Track metrics across rounds
+BASE = os.path.dirname(
+    os.path.dirname(
+        os.path.abspath(__file__)
+    )
+)
+
+MODELS_DIR = os.path.join(
+    BASE,
+    "models"
+)
+
+os.makedirs(
+    MODELS_DIR,
+    exist_ok=True
+)
+
+
 round_metrics = []
 
-def weighted_average(metrics: List[Tuple[int, Metrics]]) -> Metrics:
-    f1_scores = [m["f1"] * n for n, m in metrics]
-    total = sum(n for n, _ in metrics)
-    avg_f1 = sum(f1_scores) / total
-    round_metrics.append({"f1": avg_f1})
-    print(f"\n🌐 Global F1 after aggregation: {avg_f1:.4f}\n")
-    return {"f1": avg_f1}
+
+def weighted_average(
+    metrics: List[Tuple[int, Metrics]]
+) -> Metrics:
+
+    if not metrics:
+        return {}
+
+    total_examples = sum(
+        num_examples
+        for num_examples, _ in metrics
+    )
+
+    if total_examples == 0:
+        return {}
+
+    weighted_f1 = sum(
+        num_examples * float(
+            metric.get("f1", 0.0)
+        )
+        for num_examples, metric in metrics
+    )
+
+    weighted_loss = sum(
+        num_examples * float(
+            metric.get("loss", 0.0)
+        )
+        for num_examples, metric in metrics
+    )
+
+    global_f1 = (
+        weighted_f1 /
+        total_examples
+    )
+
+    global_loss = (
+        weighted_loss /
+        total_examples
+    )
+
+    round_metrics.append(
+        {
+            "round": len(round_metrics) + 1,
+            "f1": global_f1,
+            "loss": global_loss
+        }
+    )
+
+    print(
+        f"\n🌐 Global metrics | "
+        f"F1: {global_f1:.4f} | "
+        f"Loss: {global_loss:.4f}\n"
+    )
+
+    return {
+        "f1": float(global_f1),
+        "loss": float(global_loss)
+    }
+
 
 def save_metrics():
-    output_path = os.path.join(MODELS_DIR, "flower_history.json")
 
-    with open(output_path, "w") as f:
+    output_path = os.path.join(
+        MODELS_DIR,
+        "flower_history.json"
+    )
+
+    with open(
+        output_path,
+        "w",
+        encoding="utf-8"
+    ) as f:
+
         json.dump(
-            [{"round": i + 1, "f1": m["f1"]}
-             for i, m in enumerate(round_metrics)],
-            f
+            round_metrics,
+            f,
+            indent=2
         )
 
-    print(f"Metrics saved to {output_path}")
+    print(
+        f"Metrics saved to {output_path}"
+    )
 
-def start_server(num_rounds=10, min_clients=3):
+
+def start_server(
+    num_rounds=15,
+    min_clients=3
+):
+
     strategy = fl.server.strategy.FedAvg(
+
         fraction_fit=1.0,
+
         fraction_evaluate=1.0,
+
         min_fit_clients=min_clients,
+
         min_evaluate_clients=min_clients,
+
         min_available_clients=min_clients,
-        evaluate_metrics_aggregation_fn=weighted_average,
+
+        evaluate_metrics_aggregation_fn=weighted_average
     )
 
-    print(f"🚀 FedShield Server starting...")
-    print(f"   Waiting for {min_clients} clients...")
-    print(f"   Rounds: {num_rounds}\n")
-
-    fl.server.start_server(
-        server_address="0.0.0.0:8080",
-        config=fl.server.ServerConfig(num_rounds=num_rounds),
-        strategy=strategy,
+    print(
+        "\n======================================"
     )
-    save_metrics()
+
+    print(
+        "        FEDSHIELD FLOWER SERVER"
+    )
+
+    print(
+        "======================================"
+    )
+
+    print(
+        f"Clients required : {min_clients}"
+    )
+
+    print(
+        f"Training rounds  : {num_rounds}"
+    )
+
+    print(
+        "Server address   : 0.0.0.0:8080"
+    )
+
+    print(
+        "======================================\n"
+    )
+
+    try:
+
+        fl.server.start_server(
+
+            server_address="0.0.0.0:8080",
+
+            config=fl.server.ServerConfig(
+                num_rounds=num_rounds
+            ),
+
+            strategy=strategy
+        )
+
+    finally:
+
+        save_metrics()
+
 
 if __name__ == "__main__":
+
     start_server()
