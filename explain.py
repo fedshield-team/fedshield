@@ -1,4 +1,9 @@
-"""FedShield — offline SHAP feature-importance analysis."""
+"""
+FedShield — Offline SHAP Analysis
+
+Uses the exact same MultiClassIDS architecture
+as federated training and live inference.
+"""
 
 import json
 import os
@@ -7,8 +12,12 @@ import numpy as np
 import torch
 import shap
 
-from model import IntrusionDetector
+from model import MultiClassIDS
 
+
+# ============================================================
+# PATHS
+# ============================================================
 
 BASE = os.path.dirname(
     os.path.abspath(__file__)
@@ -17,13 +26,13 @@ BASE = os.path.dirname(
 MODEL_PATH = os.path.join(
     BASE,
     "models",
-    "federated_model.pth"
+    "federated_noniid_model.pth"
 )
 
 X_TEST_PATH = os.path.join(
     BASE,
     "data",
-    "X_test.npy"
+    "X_test_mc.npy"
 )
 
 OUTPUT_PATH = os.path.join(
@@ -31,6 +40,19 @@ OUTPUT_PATH = os.path.join(
     "models",
     "shap_results.json"
 )
+
+
+# ============================================================
+# CONSTANTS
+# ============================================================
+
+CLASS_NAMES = [
+    "Normal",
+    "DoS",
+    "Probe",
+    "R2L",
+    "U2R"
+]
 
 
 FEATURE_NAMES = [
@@ -78,9 +100,40 @@ FEATURE_NAMES = [
 ]
 
 
+# ============================================================
+# MAIN
+# ============================================================
+
 def main():
 
-    model = IntrusionDetector()
+    if not os.path.exists(
+        MODEL_PATH
+    ):
+
+        raise FileNotFoundError(
+            f"Model not found:\n"
+            f"{MODEL_PATH}\n\n"
+            "Run federated_noniid.py first."
+        )
+
+    if not os.path.exists(
+        X_TEST_PATH
+    ):
+
+        raise FileNotFoundError(
+            f"Test data not found:\n"
+            f"{X_TEST_PATH}\n\n"
+            "Run preprocess_multiclass.py first."
+        )
+
+    # --------------------------------------------------------
+    # LOAD SAME MODEL
+    # --------------------------------------------------------
+
+    model = MultiClassIDS(
+        input_dim=41,
+        num_classes=5
+    )
 
     state = torch.load(
         MODEL_PATH,
@@ -94,6 +147,10 @@ def main():
 
     model.eval()
 
+    # --------------------------------------------------------
+    # LOAD DATA
+    # --------------------------------------------------------
+
     X_test = np.load(
         X_TEST_PATH
     )
@@ -101,36 +158,55 @@ def main():
     if (
         X_test.ndim != 2
         or
-        X_test.shape[1]
-        != len(FEATURE_NAMES)
+        X_test.shape[1] != 41
     ):
 
         raise ValueError(
-            f"Expected X_test with "
-            f"{len(FEATURE_NAMES)} features, "
+            f"Expected shape "
+            f"(samples, 41), "
             f"got {X_test.shape}"
         )
 
-    background = torch.as_tensor(
-        X_test[:100],
-        dtype=torch.float32
-    )
+    # Small SHAP dataset.
+    background = X_test[:50]
 
-    samples = torch.as_tensor(
-        X_test[100:200],
-        dtype=torch.float32
-    )
+    samples = X_test[
+        50:100
+    ]
+
+    if len(samples) == 0:
+
+        raise ValueError(
+            "Not enough test samples for SHAP."
+        )
+
+    # --------------------------------------------------------
+    # PREDICTION FUNCTION
+    # --------------------------------------------------------
 
     def predict(x):
 
+        tensor = torch.as_tensor(
+            x,
+            dtype=torch.float32
+        )
+
         with torch.no_grad():
 
-            return model(
-                torch.as_tensor(
-                    x,
-                    dtype=torch.float32
-                )
-            ).cpu().numpy()
+            logits = model(
+                tensor
+            )
+
+            probabilities = torch.softmax(
+                logits,
+                dim=1
+            )
+
+        return probabilities.cpu().numpy()
+
+    # --------------------------------------------------------
+    # SHAP
+    # --------------------------------------------------------
 
     print(
         "Computing SHAP values..."
@@ -138,73 +214,103 @@ def main():
 
     explainer = shap.KernelExplainer(
         predict,
-        background.numpy()
+        background
     )
 
     values = explainer.shap_values(
-        samples.numpy(),
+        samples,
         nsamples=100
     )
 
-    if isinstance(values, list):
+    # --------------------------------------------------------
+    # NORMALIZE SHAP OUTPUT
+    # --------------------------------------------------------
 
-        arr = np.stack(
-            [
-                np.asarray(v)
-                for v in values
-            ],
+    if isinstance(
+        values,
+        list
+    ):
+
+        class_arrays = [
+            np.asarray(
+                value
+            )
+            for value in values
+        ]
+
+        stacked = np.stack(
+            class_arrays,
             axis=-1
         )
 
-        mean_abs = np.abs(arr).mean(
+        mean_abs = np.abs(
+            stacked
+        ).mean(
             axis=(0, 2)
         )
 
     else:
 
-        arr = np.asarray(values)
+        arr = np.asarray(
+            values
+        )
 
         if arr.ndim == 2:
 
             mean_abs = np.abs(
                 arr
-            ).mean(axis=0)
+            ).mean(
+                axis=0
+            )
 
         elif (
             arr.ndim == 3
             and
-            arr.shape[1]
-            == len(FEATURE_NAMES)
+            arr.shape[1] == 41
         ):
 
             mean_abs = np.abs(
                 arr
-            ).mean(axis=(0, 2))
+            ).mean(
+                axis=(0, 2)
+            )
 
         elif (
             arr.ndim == 3
             and
-            arr.shape[2]
-            == len(FEATURE_NAMES)
+            arr.shape[2] == 41
         ):
 
             mean_abs = np.abs(
                 arr
-            ).mean(axis=(0, 1))
+            ).mean(
+                axis=(0, 1)
+            )
 
         else:
 
             raise ValueError(
-                f"Unsupported SHAP output shape: "
+                f"Unsupported SHAP shape: "
                 f"{arr.shape}"
             )
+
+    if len(mean_abs) != 41:
+
+        raise ValueError(
+            f"Expected 41 SHAP scores, "
+            f"got {len(mean_abs)}"
+        )
+
+    # --------------------------------------------------------
+    # SORT
+    # --------------------------------------------------------
 
     importance = sorted(
         zip(
             FEATURE_NAMES,
             mean_abs.tolist()
         ),
-        key=lambda x: x[1],
+        key=lambda item: item[1],
         reverse=True
     )
 
@@ -212,7 +318,10 @@ def main():
         "\n===== TOP 10 FEATURES ====="
     )
 
-    for i, (name, score) in enumerate(
+    for i, (
+        name,
+        score
+    ) in enumerate(
         importance[:10],
         1
     ):
@@ -222,6 +331,10 @@ def main():
             f"{name:35s} "
             f"SHAP: {score:.4f}"
         )
+
+    # --------------------------------------------------------
+    # SAVE
+    # --------------------------------------------------------
 
     os.makedirs(
         os.path.dirname(
@@ -238,24 +351,39 @@ def main():
 
         json.dump(
             {
-                "feature_importance": [
-                    {
-                        "feature": name,
-                        "shap_score": float(score)
-                    }
-                    for name, score
-                    in importance
-                ]
+                "model":
+                    "federated_noniid_model",
+
+                "classes":
+                    CLASS_NAMES,
+
+                "feature_count":
+                    41,
+
+                "feature_importance":
+                    [
+                        {
+                            "feature":
+                                name,
+
+                            "shap_score":
+                                float(score)
+                        }
+
+                        for name, score
+                        in importance
+                    ]
             },
             f,
             indent=2
         )
 
     print(
-        f"\nSHAP results saved to "
+        f"\nSHAP results saved to:\n"
         f"{OUTPUT_PATH}"
     )
 
 
 if __name__ == "__main__":
+
     main()

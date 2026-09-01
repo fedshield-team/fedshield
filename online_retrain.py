@@ -1,4 +1,11 @@
-"""FedShield — safe online incremental retraining."""
+"""
+FedShield — Safe Online Incremental Retraining
+
+Uses the exact MultiClassIDS architecture from model.py.
+
+A new model is accepted only when held-out Macro F1
+does not decrease.
+"""
 
 import json
 import os
@@ -18,6 +25,12 @@ from torch.utils.data import (
     TensorDataset
 )
 
+from model import MultiClassIDS
+
+
+# ============================================================
+# PATHS
+# ============================================================
 
 BASE = os.path.dirname(
     os.path.abspath(__file__)
@@ -83,6 +96,11 @@ Y_TRAIN_PATH = os.path.join(
     "y_train_mc.npy"
 )
 
+
+# ============================================================
+# CONSTANTS
+# ============================================================
+
 CLASS_NAMES = [
     "Normal",
     "DoS",
@@ -91,6 +109,9 @@ CLASS_NAMES = [
     "U2R"
 ]
 
+NUM_CLASSES = len(
+    CLASS_NAMES
+)
 
 MIN_BUFFER_SAMPLES = 40
 
@@ -103,67 +124,9 @@ FINE_TUNE_LR = 0.0005
 F1_REGRESSION_TOLERANCE = 0.0
 
 
-class MultiClassIDS(
-    nn.Module
-):
-
-    def __init__(
-        self,
-        input_dim=41,
-        num_classes=5
-    ):
-
-        super().__init__()
-
-        self.network = nn.Sequential(
-
-            nn.Linear(
-                input_dim,
-                256
-            ),
-
-            nn.BatchNorm1d(
-                256
-            ),
-
-            nn.ReLU(),
-
-            nn.Dropout(
-                0.3
-            ),
-
-            nn.Linear(
-                256,
-                128
-            ),
-
-            nn.BatchNorm1d(
-                128
-            ),
-
-            nn.ReLU(),
-
-            nn.Dropout(
-                0.2
-            ),
-
-            nn.Linear(
-                128,
-                64
-            ),
-
-            nn.ReLU(),
-
-            nn.Linear(
-                64,
-                num_classes
-            )
-        )
-
-    def forward(self, x):
-
-        return self.network(x)
-
+# ============================================================
+# DATABASE
+# ============================================================
 
 def _connect():
 
@@ -198,6 +161,10 @@ def init_retrain_buffer():
         )
 
 
+# ============================================================
+# BUFFER
+# ============================================================
+
 def log_retrain_sample(
     features,
     label,
@@ -216,12 +183,16 @@ def log_retrain_sample(
             f"got {features.size}"
         )
 
-    if not 0 <= int(label) < len(
-        CLASS_NAMES
+    label = int(
+        label
+    )
+
+    if not (
+        0 <= label < NUM_CLASSES
     ):
 
         raise ValueError(
-            "Invalid class label"
+            f"Invalid class label: {label}"
         )
 
     with _connect() as conn:
@@ -246,9 +217,9 @@ def log_retrain_sample(
                     features.tolist()
                 ),
 
-                int(label),
+                label,
 
-                source
+                str(source)
             )
         )
 
@@ -280,8 +251,8 @@ def _load_unconsumed_buffer():
         ).fetchall()
 
     ids = [
-        r[0]
-        for r in rows
+        row[0]
+        for row in rows
     ]
 
     if not rows:
@@ -290,26 +261,28 @@ def _load_unconsumed_buffer():
             ids,
             np.empty(
                 (0, 41),
-                np.float32
+                dtype=np.float32
             ),
             np.empty(
                 (0,),
-                np.int64
+                dtype=np.int64
             )
         )
 
     X = np.asarray(
         [
-            json.loads(r[1])
-            for r in rows
+            json.loads(
+                row[1]
+            )
+            for row in rows
         ],
         dtype=np.float32
     )
 
     y = np.asarray(
         [
-            r[2]
-            for r in rows
+            row[2]
+            for row in rows
         ],
         dtype=np.int64
     )
@@ -333,11 +306,15 @@ def _mark_consumed(
             WHERE id=?
             """,
             [
-                (i,)
-                for i in ids
+                (item,)
+                for item in ids
             ]
         )
 
+
+# ============================================================
+# DRIFT
+# ============================================================
 
 def _latest_drift_is_critical():
 
@@ -348,14 +325,17 @@ def _latest_drift_is_critical():
             encoding="utf-8"
         ) as f:
 
-            logs = json.load(f)
+            logs = json.load(
+                f
+            )
 
         return (
             isinstance(
                 logs,
                 list
             )
-            and bool(logs)
+            and
+            bool(logs)
             and
             logs[-1].get(
                 "status"
@@ -363,11 +343,7 @@ def _latest_drift_is_critical():
             == "DRIFT_DETECTED"
         )
 
-    except (
-        OSError,
-        ValueError,
-        json.JSONDecodeError
-    ):
+    except Exception:
 
         return False
 
@@ -382,6 +358,10 @@ def should_retrain():
     )
 
 
+# ============================================================
+# EVALUATION
+# ============================================================
+
 def _evaluate_f1(
     model,
     X,
@@ -392,14 +372,16 @@ def _evaluate_f1(
 
     with torch.no_grad():
 
-        pred = (
+        predictions = (
             model(
                 torch.as_tensor(
                     X,
                     dtype=torch.float32
                 )
             )
-            .argmax(1)
+            .argmax(
+                dim=1
+            )
             .cpu()
             .numpy()
         )
@@ -407,12 +389,16 @@ def _evaluate_f1(
     return float(
         f1_score(
             y,
-            pred,
+            predictions,
             average="macro",
             zero_division=0
         )
     )
 
+
+# ============================================================
+# ATOMIC SAVE
+# ============================================================
 
 def _atomic_torch_save(
     state,
@@ -429,7 +415,9 @@ def _atomic_torch_save(
         dir=directory
     )
 
-    os.close(fd)
+    os.close(
+        fd
+    )
 
     try:
 
@@ -445,9 +433,13 @@ def _atomic_torch_save(
 
     finally:
 
-        if os.path.exists(tmp):
+        if os.path.exists(
+            tmp
+        ):
 
-            os.remove(tmp)
+            os.remove(
+                tmp
+            )
 
 
 def _atomic_json_save(
@@ -487,10 +479,18 @@ def _atomic_json_save(
 
     finally:
 
-        if os.path.exists(tmp):
+        if os.path.exists(
+            tmp
+        ):
 
-            os.remove(tmp)
+            os.remove(
+                tmp
+            )
 
+
+# ============================================================
+# INCREMENTAL RETRAINING
+# ============================================================
 
 def run_incremental_retrain(
     verbose=True
@@ -502,16 +502,23 @@ def run_incremental_retrain(
                 timezone.utc
             ).isoformat(),
 
-        "accepted":
-            False
+        "accepted": False
     }
 
     init_retrain_buffer()
 
+    # --------------------------------------------------------
+    # Check required files
+    # --------------------------------------------------------
+
     if not (
-        os.path.exists(X_TEST_PATH)
+        os.path.exists(
+            X_TEST_PATH
+        )
         and
-        os.path.exists(Y_TEST_PATH)
+        os.path.exists(
+            Y_TEST_PATH
+        )
     ):
 
         result["error"] = (
@@ -519,6 +526,21 @@ def run_incremental_retrain(
         )
 
         return result
+
+    if not os.path.exists(
+        MODEL_PATH
+    ):
+
+        result["error"] = (
+            f"Model not found: "
+            f"{MODEL_PATH}"
+        )
+
+        return result
+
+    # --------------------------------------------------------
+    # Load new samples
+    # --------------------------------------------------------
 
     ids, X_new, y_new = (
         _load_unconsumed_buffer()
@@ -530,25 +552,20 @@ def run_incremental_retrain(
 
     if (
         len(X_new) == 0
-        and not critical
+        and
+        not critical
     ):
 
-        result["error"] = (
+        result["reason"] = (
             "No buffered samples "
             "and no critical drift."
         )
 
         return result
 
-    if not os.path.exists(
-        MODEL_PATH
-    ):
-
-        result["error"] = (
-            f"No model at {MODEL_PATH}."
-        )
-
-        return result
+    # --------------------------------------------------------
+    # Load test set
+    # --------------------------------------------------------
 
     X_test = np.load(
         X_TEST_PATH
@@ -570,13 +587,21 @@ def run_incremental_retrain(
 
         return result
 
+    # --------------------------------------------------------
+    # Replay data
+    # --------------------------------------------------------
+
     X_replay = None
     y_replay = None
 
     if (
-        os.path.exists(X_TRAIN_PATH)
+        os.path.exists(
+            X_TRAIN_PATH
+        )
         and
-        os.path.exists(Y_TRAIN_PATH)
+        os.path.exists(
+            Y_TRAIN_PATH
+        )
     ):
 
         X_full = np.load(
@@ -587,14 +612,18 @@ def run_incremental_retrain(
             Y_TRAIN_PATH
         )
 
-        if len(X_full):
+        if len(X_full) > 0:
 
             n = min(
                 REPLAY_SAMPLE_SIZE,
                 len(X_full)
             )
 
-            idx = np.random.choice(
+            rng = np.random.default_rng(
+                42
+            )
+
+            idx = rng.choice(
                 len(X_full),
                 n,
                 replace=False
@@ -608,7 +637,14 @@ def run_incremental_retrain(
                 idx
             ]
 
-    model = MultiClassIDS()
+    # --------------------------------------------------------
+    # Load exact same model
+    # --------------------------------------------------------
+
+    model = MultiClassIDS(
+        input_dim=41,
+        num_classes=NUM_CLASSES
+    )
 
     state = torch.load(
         MODEL_PATH,
@@ -620,30 +656,40 @@ def run_incremental_retrain(
         state
     )
 
+    # --------------------------------------------------------
+    # Baseline F1
+    # --------------------------------------------------------
+
     f1_before = _evaluate_f1(
         model,
         X_test,
         y_test
     )
 
+    # --------------------------------------------------------
+    # Build fine-tuning dataset
+    # --------------------------------------------------------
+
     if (
         X_replay is not None
         and
-        len(X_new)
+        len(X_new) > 0
     ):
 
         X_ft = np.concatenate(
             [
                 X_new,
                 X_replay
-            ]
+            ],
+            axis=0
         )
 
         y_ft = np.concatenate(
             [
                 y_new,
                 y_replay
-            ]
+            ],
+            axis=0
         )
 
     elif X_replay is not None:
@@ -655,6 +701,55 @@ def run_incremental_retrain(
 
         X_ft = X_new
         y_ft = y_new
+
+    if len(X_ft) == 0:
+
+        result["error"] = (
+            "No training samples available."
+        )
+
+        return result
+
+    # --------------------------------------------------------
+    # Class weights for fine-tuning
+    # --------------------------------------------------------
+
+    counts = np.bincount(
+        y_ft,
+        minlength=NUM_CLASSES
+    ).astype(
+        np.float32
+    )
+
+    weights = (
+        len(y_ft)
+        /
+        (
+            NUM_CLASSES
+            *
+            np.maximum(
+                counts,
+                1.0
+            )
+        )
+    )
+
+    weights = np.clip(
+        weights,
+        1.0,
+        10.0
+    )
+
+    criterion = nn.CrossEntropyLoss(
+        weight=torch.as_tensor(
+            weights,
+            dtype=torch.float32
+        )
+    )
+
+    # --------------------------------------------------------
+    # DataLoader
+    # --------------------------------------------------------
 
     loader = DataLoader(
         TensorDataset(
@@ -676,9 +771,9 @@ def run_incremental_retrain(
         lr=FINE_TUNE_LR
     )
 
-    criterion = (
-        nn.CrossEntropyLoss()
-    )
+    # --------------------------------------------------------
+    # Fine tune
+    # --------------------------------------------------------
 
     model.train()
 
@@ -692,14 +787,27 @@ def run_incremental_retrain(
                 set_to_none=True
             )
 
+            logits = model(
+                xb
+            )
+
             loss = criterion(
-                model(xb),
+                logits,
                 yb
             )
 
             loss.backward()
 
+            torch.nn.utils.clip_grad_norm_(
+                model.parameters(),
+                max_norm=5.0
+            )
+
             optimizer.step()
+
+    # --------------------------------------------------------
+    # Evaluate updated model
+    # --------------------------------------------------------
 
     f1_after = _evaluate_f1(
         model,
@@ -733,10 +841,16 @@ def run_incremental_retrain(
         }
     )
 
+    # --------------------------------------------------------
+    # SAFETY CHECK
+    # --------------------------------------------------------
+
     if (
         f1_after
-        + F1_REGRESSION_TOLERANCE
-        < f1_before
+        +
+        F1_REGRESSION_TOLERANCE
+        <
+        f1_before
     ):
 
         result["reason"] = (
@@ -744,13 +858,16 @@ def run_incremental_retrain(
             "new weights discarded."
         )
 
-        _mark_consumed(
-            ids
-        )
-
+        # Important:
+        # Do NOT consume the samples if training
+        # failed. They remain available for another
+        # attempt.
         return result
 
-    # Backup old model
+    # --------------------------------------------------------
+    # Backup current model
+    # --------------------------------------------------------
+
     if os.path.exists(
         MODEL_PATH
     ):
@@ -766,11 +883,18 @@ def run_incremental_retrain(
             MODEL_BACKUP
         )
 
-    # Save new model atomically
+    # --------------------------------------------------------
+    # Commit new model
+    # --------------------------------------------------------
+
     _atomic_torch_save(
         model.state_dict(),
         MODEL_PATH
     )
+
+    # --------------------------------------------------------
+    # Update history
+    # --------------------------------------------------------
 
     try:
 
@@ -779,7 +903,9 @@ def run_incremental_retrain(
             encoding="utf-8"
         ) as f:
 
-            history = json.load(f)
+            history = json.load(
+                f
+            )
 
         if not isinstance(
             history,
@@ -788,11 +914,7 @@ def run_incremental_retrain(
 
             history = []
 
-    except (
-        OSError,
-        ValueError,
-        json.JSONDecodeError
-    ):
+    except Exception:
 
         history = []
 
@@ -825,6 +947,13 @@ def run_incremental_retrain(
             "buffer_samples":
                 len(X_new),
 
+            "replay_samples":
+                (
+                    0
+                    if X_replay is None
+                    else len(X_replay)
+                ),
+
             "timestamp":
                 result[
                     "triggered_at"
@@ -837,6 +966,10 @@ def run_incremental_retrain(
         HISTORY_PATH
     )
 
+    # --------------------------------------------------------
+    # Model version
+    # --------------------------------------------------------
+
     version = int(
         datetime.now(
             timezone.utc
@@ -846,16 +979,24 @@ def run_incremental_retrain(
 
     _atomic_json_save(
         {
-            "version": version,
+            "version":
+                version,
+
             "updated_at":
                 result[
                     "triggered_at"
                 ],
+
             "round":
                 next_round
         },
         VERSION_PATH
     )
+
+    # --------------------------------------------------------
+    # Consume samples only after
+    # successful model commit.
+    # --------------------------------------------------------
 
     _mark_consumed(
         ids
@@ -863,7 +1004,8 @@ def run_incremental_retrain(
 
     result.update(
         {
-            "accepted": True,
+            "accepted":
+                True,
 
             "reason":
                 "F1 held or improved — "
@@ -877,9 +1019,8 @@ def run_incremental_retrain(
     if verbose:
 
         print(
-            f"[online_retrain] "
-            f"ACCEPTED: F1 "
-            f"{f1_before:.4f} -> "
+            f"[online_retrain] ACCEPTED: "
+            f"F1 {f1_before:.4f} -> "
             f"{f1_after:.4f}; "
             f"version={version}"
         )
@@ -887,13 +1028,20 @@ def run_incremental_retrain(
     return result
 
 
+# ============================================================
+# DIRECT EXECUTION
+# ============================================================
+
 if __name__ == "__main__":
 
     init_retrain_buffer()
 
+    count = (
+        _unconsumed_buffer_count()
+    )
+
     print(
-        f"Buffered samples: "
-        f"{_unconsumed_buffer_count()}"
+        f"Buffered samples: {count}"
     )
 
     if should_retrain():

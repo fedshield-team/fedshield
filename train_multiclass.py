@@ -4,15 +4,12 @@ import os
 import numpy as np
 import torch
 import torch.nn as nn
+
 from imblearn.over_sampling import SMOTE
-from sklearn.metrics import (
-    classification_report,
-    f1_score
-)
-from torch.utils.data import (
-    DataLoader,
-    TensorDataset
-)
+from sklearn.metrics import classification_report, f1_score
+from torch.utils.data import DataLoader, TensorDataset
+
+from model import MultiClassIDS
 
 
 CLASS_NAMES = [
@@ -22,38 +19,6 @@ CLASS_NAMES = [
     "R2L",
     "U2R"
 ]
-
-
-class MultiClassIDS(nn.Module):
-
-    def __init__(
-        self,
-        input_dim=41,
-        num_classes=5
-    ):
-
-        super().__init__()
-
-        self.network = nn.Sequential(
-
-            nn.Linear(input_dim, 256),
-            nn.LayerNorm(256),
-            nn.ReLU(),
-            nn.Dropout(0.30),
-
-            nn.Linear(256, 128),
-            nn.LayerNorm(128),
-            nn.ReLU(),
-            nn.Dropout(0.20),
-
-            nn.Linear(128, 64),
-            nn.ReLU(),
-
-            nn.Linear(64, num_classes)
-        )
-
-    def forward(self, x):
-        return self.network(x)
 
 
 BASE_DIR = os.path.dirname(
@@ -70,10 +35,7 @@ MODELS_DIR = os.path.join(
     "models"
 )
 
-os.makedirs(
-    MODELS_DIR,
-    exist_ok=True
-)
+os.makedirs(MODELS_DIR, exist_ok=True)
 
 
 X_train = np.load(
@@ -123,7 +85,6 @@ print(
     "\nApplying SMOTE..."
 )
 
-
 smote = SMOTE(
     random_state=42,
     k_neighbors=5
@@ -139,7 +100,6 @@ print(
     "\nClass distribution after SMOTE:"
 )
 
-
 for i, name in enumerate(
     CLASS_NAMES
 ):
@@ -151,7 +111,6 @@ for i, name in enumerate(
 
 
 input_dim = X_train.shape[1]
-
 
 X_train_t = torch.as_tensor(
     X_train,
@@ -185,7 +144,8 @@ loader = DataLoader(
 
 
 model = MultiClassIDS(
-    input_dim=input_dim
+    input_dim=input_dim,
+    num_classes=len(CLASS_NAMES)
 )
 
 
@@ -196,17 +156,14 @@ optimizer = torch.optim.Adam(
 )
 
 
-scheduler = (
-    torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer,
-        patience=3,
-        factor=0.5
-    )
+scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+    optimizer,
+    patience=3,
+    factor=0.5
 )
 
 
 criterion = nn.CrossEntropyLoss()
-
 
 history = []
 
@@ -214,7 +171,15 @@ EPOCHS = 30
 
 
 print(
-    "\n===== CENTRALIZED MULTI-CLASS TRAINING ====="
+    "\n============================================================"
+)
+
+print(
+    "CENTRALIZED MULTI-CLASS TRAINING"
+)
+
+print(
+    "============================================================"
 )
 
 
@@ -230,7 +195,9 @@ for epoch in range(
 
     for X_batch, y_batch in loader:
 
-        optimizer.zero_grad()
+        optimizer.zero_grad(
+            set_to_none=True
+        )
 
         logits = model(
             X_batch
@@ -242,6 +209,7 @@ for epoch in range(
         )
 
         loss.backward()
+
         optimizer.step()
 
         total_loss += loss.item()
@@ -261,7 +229,9 @@ for epoch in range(
     with torch.no_grad():
 
         predictions = (
-            model(X_test_t)
+            model(
+                X_test_t
+            )
             .argmax(dim=1)
             .cpu()
             .numpy()
@@ -277,7 +247,7 @@ for epoch in range(
     history.append(
         {
             "epoch": epoch,
-            "loss": avg_loss,
+            "loss": float(avg_loss),
             "macro_f1": float(macro_f1)
         }
     )
@@ -290,9 +260,16 @@ for epoch in range(
 
 
 print(
-    "\n===== FINAL CLASSIFICATION REPORT ====="
+    "\n============================================================"
 )
 
+print(
+    "FINAL CLASSIFICATION REPORT"
+)
+
+print(
+    "============================================================"
+)
 
 print(
     classification_report(
@@ -334,5 +311,9 @@ with open(
 
 
 print(
-    f"Multi-class model saved to {model_path}"
+    f"Multi-class model saved to:\n{model_path}"
+)
+
+print(
+    f"History saved to:\n{history_path}"
 )

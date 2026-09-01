@@ -5,17 +5,19 @@ import os
 import numpy as np
 import torch
 import torch.nn as nn
+
 from sklearn.metrics import (
     classification_report,
     f1_score
 )
-from torch.utils.data import (
-    DataLoader,
-    TensorDataset
-)
 
+from model import MultiClassIDS
 from server.aggregator import fed_avg
 
+
+# ============================================================
+# CONSTANTS
+# ============================================================
 
 CLASS_NAMES = [
     "Normal",
@@ -25,189 +27,14 @@ CLASS_NAMES = [
     "U2R"
 ]
 
-
-class MultiClassIDS(nn.Module):
-
-    def __init__(
-        self,
-        input_dim=41,
-        num_classes=5
-    ):
-
-        super().__init__()
-
-        self.network = nn.Sequential(
-
-            nn.Linear(input_dim, 256),
-            nn.LayerNorm(256),
-            nn.ReLU(),
-            nn.Dropout(0.30),
-
-            nn.Linear(256, 128),
-            nn.LayerNorm(128),
-            nn.ReLU(),
-            nn.Dropout(0.20),
-
-            nn.Linear(128, 64),
-            nn.ReLU(),
-
-            nn.Linear(64, num_classes)
-        )
-
-    def forward(self, x):
-        return self.network(x)
-
-    def get_weights(self):
-
-        return [
-            parameter.detach().clone()
-            for parameter in self.parameters()
-        ]
-
-    def set_weights(self, weights):
-
-        with torch.no_grad():
-
-            for parameter, weight in zip(
-                self.parameters(),
-                weights
-            ):
-
-                parameter.copy_(weight)
-
-
-class MultiClassNode:
-
-    def __init__(
-        self,
-        node_id,
-        X,
-        y,
-        label,
-        lr=0.001
-    ):
-
-        self.node_id = node_id
-        self.label = label
-        self.lr = lr
-
-        self.model = MultiClassIDS(
-            input_dim=X.shape[1]
-        )
-
-        self.criterion = (
-            nn.CrossEntropyLoss()
-        )
-
-        self.optimizer = torch.optim.Adam(
-            self.model.parameters(),
-            lr=lr
-        )
-
-        X_t = torch.as_tensor(
-            X,
-            dtype=torch.float32
-        )
-
-        y_t = torch.as_tensor(
-            y,
-            dtype=torch.long
-        )
-
-        self.X_t = X_t
-        self.y_t = y_t
-
-        self.loader = DataLoader(
-            TensorDataset(
-                X_t,
-                y_t
-            ),
-            batch_size=256,
-            shuffle=True
-        )
-
-        unique, counts = np.unique(
-            y,
-            return_counts=True
-        )
-
-        distribution = {
-            CLASS_NAMES[int(label)]:
-                int(count)
-            for label, count
-            in zip(unique, counts)
-        }
-
-        print(
-            f"[Node {node_id} - {label}] "
-            f"{len(X)} samples | "
-            f"Distribution: {distribution}"
-        )
-
-    def train_local(
-        self,
-        epochs=1
-    ):
-
-        self.model.train()
-
-        total_loss = 0.0
-        batches = 0
-
-        for _ in range(epochs):
-
-            for X_batch, y_batch in self.loader:
-
-                self.optimizer.zero_grad()
-
-                logits = self.model(
-                    X_batch
-                )
-
-                loss = self.criterion(
-                    logits,
-                    y_batch
-                )
-
-                loss.backward()
-                self.optimizer.step()
-
-                total_loss += loss.item()
-                batches += 1
-
-        return total_loss / max(
-            batches,
-            1
-        )
-
-    def get_weights(self):
-        return self.model.get_weights()
-
-    def set_weights(self, weights):
-
-        self.model.set_weights(
-            weights
-        )
-
-        self.optimizer = torch.optim.Adam(
-            self.model.parameters(),
-            lr=self.lr
-        )
-
-
-parser = argparse.ArgumentParser()
-
-parser.add_argument(
-    "--dataset",
-    choices=[
-        "nslkdd",
-        "cicids2017"
-    ],
-    default="nslkdd"
+NUM_CLASSES = len(
+    CLASS_NAMES
 )
 
-args = parser.parse_args()
 
+# ============================================================
+# PATHS
+# ============================================================
 
 BASE_DIR = os.path.dirname(
     os.path.abspath(__file__)
@@ -228,6 +55,28 @@ os.makedirs(
     exist_ok=True
 )
 
+
+# ============================================================
+# ARGUMENTS
+# ============================================================
+
+parser = argparse.ArgumentParser()
+
+parser.add_argument(
+    "--dataset",
+    choices=[
+        "nslkdd",
+        "cicids2017"
+    ],
+    default="nslkdd"
+)
+
+args = parser.parse_args()
+
+
+# ============================================================
+# DATASET PATHS
+# ============================================================
 
 if args.dataset == "cicids2017":
 
@@ -294,17 +143,29 @@ else:
     )
 
 
+# ============================================================
+# LOAD DATA
+# ============================================================
+
 print(
     f"\n===== DATASET: {args.dataset} ====="
 )
 
+X_train = np.load(
+    X_TRAIN_PATH
+)
 
-X_train = np.load(X_TRAIN_PATH)
-y_train = np.load(Y_TRAIN_PATH)
+y_train = np.load(
+    Y_TRAIN_PATH
+)
 
-X_test = np.load(X_TEST_PATH)
-y_test = np.load(Y_TEST_PATH)
+X_test = np.load(
+    X_TEST_PATH
+)
 
+y_test = np.load(
+    Y_TEST_PATH
+)
 
 input_dim = X_train.shape[1]
 
@@ -316,191 +177,416 @@ print(
     f"Features: {input_dim}"
 )
 
+if input_dim != 41:
+
+    raise ValueError(
+        f"FedShield expects 41 features, "
+        f"got {input_dim}"
+    )
+
 
 # ============================================================
-# NON-IID SPLIT
+# CLASS DISTRIBUTION
 # ============================================================
 
-np.random.seed(42)
+print(
+    "\n===== GLOBAL TRAINING DISTRIBUTION ====="
+)
 
-idx_normal = np.where(
-    y_train == 0
-)[0]
+for class_id, class_name in enumerate(
+    CLASS_NAMES
+):
 
-idx_dos = np.where(
-    y_train == 1
-)[0]
-
-idx_probe = np.where(
-    y_train == 2
-)[0]
-
-idx_r2l = np.where(
-    y_train == 3
-)[0]
-
-idx_u2r = np.where(
-    y_train == 4
-)[0]
+    print(
+        f"{class_name}: "
+        f"{int(np.sum(y_train == class_id))}"
+    )
 
 
-def take(
-    indices,
-    fraction,
-    seed
+# ============================================================
+# CLASS WEIGHTS
+# ============================================================
+
+class_counts = np.bincount(
+    y_train,
+    minlength=NUM_CLASSES
+).astype(
+    np.float32
+)
+
+class_weights = (
+    len(y_train)
+    /
+    (
+        NUM_CLASSES
+        *
+        np.maximum(
+            class_counts,
+            1.0
+        )
+    )
+)
+
+# Keep the weights numerically reasonable.
+class_weights = np.clip(
+    class_weights,
+    1.0,
+    10.0
+)
+
+print(
+    "\n===== CLASS WEIGHTS ====="
+)
+
+for i, name in enumerate(
+    CLASS_NAMES
+):
+
+    print(
+        f"{name}: "
+        f"{class_weights[i]:.4f}"
+    )
+
+
+# ============================================================
+# TRUE NON-IID PARTITION
+# ============================================================
+
+def create_noniid_partition(
+    y,
+    seed=42
 ):
 
     rng = np.random.default_rng(
         seed
     )
 
-    count = int(
-        len(indices) * fraction
-    )
-
-    count = min(
-        count,
-        len(indices)
-    )
-
-    return rng.choice(
-        indices,
-        count,
-        replace=False
-    )
-
-
-hospital_idx = np.concatenate(
-    [
-
-        take(
-            idx_normal,
-            0.50,
-            1
-        ),
-
-        take(
-            idx_dos,
-            0.10,
-            2
-        ),
-
-        take(
-            idx_probe,
-            0.10,
-            3
-        ),
-
-        take(
-            idx_r2l,
-            0.60,
-            4
-        ),
-
-        take(
-            idx_u2r,
-            0.30,
-            5
-        )
+    client_indices = [
+        [],
+        [],
+        []
     ]
-)
 
+    # Desired approximate client proportions
+    # for each class.
+    #
+    # Hospital: Normal-heavy
+    # Bank: DoS/Probe-heavy
+    # Campus: receives remaining data
 
-bank_idx = np.concatenate(
-    [
+    proportions = {
+        0: [0.50, 0.25, 0.25],  # Normal
+        1: [0.10, 0.60, 0.30],  # DoS
+        2: [0.10, 0.60, 0.30],  # Probe
+        3: [0.60, 0.20, 0.20],  # R2L
+        4: [0.30, 0.30, 0.40],  # U2R
+    }
 
-        take(
-            idx_normal,
-            0.25,
-            6
-        ),
+    for class_id in range(
+        NUM_CLASSES
+    ):
 
-        take(
-            idx_dos,
-            0.60,
-            7
-        ),
+        indices = np.where(
+            y == class_id
+        )[0]
 
-        take(
-            idx_probe,
-            0.60,
-            8
-        ),
+        indices = indices.copy()
 
-        take(
-            idx_r2l,
-            0.20,
-            9
-        ),
-
-        take(
-            idx_u2r,
-            0.30,
-            10
+        rng.shuffle(
+            indices
         )
-    ]
+
+        p = proportions[
+            class_id
+        ]
+
+        n = len(indices)
+
+        n1 = int(
+            n * p[0]
+        )
+
+        n2 = int(
+            n * p[1]
+        )
+
+        first_end = n1
+
+        second_end = (
+            n1 + n2
+        )
+
+        client_indices[0].extend(
+            indices[
+                :first_end
+            ].tolist()
+        )
+
+        client_indices[1].extend(
+            indices[
+                first_end:second_end
+            ].tolist()
+        )
+
+        client_indices[2].extend(
+            indices[
+                second_end:
+            ].tolist()
+        )
+
+    result = []
+
+    for indices in client_indices:
+
+        indices = np.asarray(
+            indices,
+            dtype=np.int64
+        )
+
+        rng.shuffle(
+            indices
+        )
+
+        result.append(
+            indices
+        )
+
+    return result
+
+
+node_indices = create_noniid_partition(
+    y_train
 )
 
 
-used = set(
-    hospital_idx.tolist()
-) | set(
-    bank_idx.tolist()
+# ============================================================
+# VERIFY PARTITION
+# ============================================================
+
+all_assigned = np.concatenate(
+    node_indices
 )
 
-all_indices = set(
-    range(len(y_train))
+if len(all_assigned) != len(
+    y_train
+):
+
+    raise RuntimeError(
+        "Non-IID partition does not "
+        "contain every training sample."
+    )
+
+if len(
+    np.unique(all_assigned)
+) != len(
+    y_train
+):
+
+    raise RuntimeError(
+        "Non-IID partition contains "
+        "duplicate samples."
+    )
+
+
+# ============================================================
+# NODE
+# ============================================================
+
+class MultiClassNode:
+
+    def __init__(
+        self,
+        node_id,
+        X,
+        y,
+        label,
+        lr,
+        loss_weights
+    ):
+
+        self.node_id = node_id
+        self.label = label
+        self.lr = lr
+
+        self.model = MultiClassIDS(
+            input_dim=X.shape[1],
+            num_classes=NUM_CLASSES
+        )
+
+        self.optimizer = torch.optim.Adam(
+            self.model.parameters(),
+            lr=lr
+        )
+
+        self.X_t = torch.as_tensor(
+            X,
+            dtype=torch.float32
+        )
+
+        self.y_t = torch.as_tensor(
+            y,
+            dtype=torch.long
+        )
+
+        self.loader = torch.utils.data.DataLoader(
+            torch.utils.data.TensorDataset(
+                self.X_t,
+                self.y_t
+            ),
+            batch_size=256,
+            shuffle=True
+        )
+
+        self.criterion = nn.CrossEntropyLoss(
+            weight=loss_weights
+        )
+
+        unique, counts = np.unique(
+            y,
+            return_counts=True
+        )
+
+        distribution = {
+            CLASS_NAMES[int(label)]:
+            int(count)
+            for label, count
+            in zip(
+                unique,
+                counts
+            )
+        }
+
+        print(
+            f"[Node {node_id} - {label}] "
+            f"{len(X)} samples | "
+            f"Distribution: {distribution}"
+        )
+
+    def train_local(
+        self,
+        epochs=3
+    ):
+
+        self.model.train()
+
+        total_loss = 0.0
+        batches = 0
+
+        for _ in range(
+            epochs
+        ):
+
+            for X_batch, y_batch in self.loader:
+
+                self.optimizer.zero_grad(
+                    set_to_none=True
+                )
+
+                logits = self.model(
+                    X_batch
+                )
+
+                loss = self.criterion(
+                    logits,
+                    y_batch
+                )
+
+                loss.backward()
+
+                torch.nn.utils.clip_grad_norm_(
+                    self.model.parameters(),
+                    max_norm=5.0
+                )
+
+                self.optimizer.step()
+
+                total_loss += loss.item()
+                batches += 1
+
+        return (
+            total_loss /
+            max(
+                batches,
+                1
+            )
+        )
+
+    def get_weights(self):
+
+        return self.model.get_weights()
+
+    def set_weights(
+        self,
+        weights
+    ):
+
+        self.model.set_weights(
+            weights
+        )
+
+        # Reset local optimizer after
+        # receiving the global model.
+        self.optimizer = torch.optim.Adam(
+            self.model.parameters(),
+            lr=self.lr
+        )
+
+
+# ============================================================
+# TRAINING CONFIGURATION
+# ============================================================
+
+if args.dataset == "cicids2017":
+
+    lr = 0.0003
+    local_epochs = 1
+
+else:
+
+    lr = 0.001
+    local_epochs = 3
+
+
+loss_weights_tensor = torch.as_tensor(
+    class_weights,
+    dtype=torch.float32
 )
 
-campus_idx = np.array(
-    list(
-        all_indices - used
-    ),
-    dtype=int
-)
 
+# ============================================================
+# CREATE NODES
+# ============================================================
 
 print(
     "\n===== NON-IID NODE DISTRIBUTION ====="
 )
 
-
 nodes = [
-
     MultiClassNode(
         1,
-        X_train[hospital_idx],
-        y_train[hospital_idx],
+        X_train[node_indices[0]],
+        y_train[node_indices[0]],
         "Hospital",
-        lr=(
-            0.0003
-            if args.dataset == "cicids2017"
-            else 0.001
-        )
+        lr,
+        loss_weights_tensor
     ),
 
     MultiClassNode(
         2,
-        X_train[bank_idx],
-        y_train[bank_idx],
+        X_train[node_indices[1]],
+        y_train[node_indices[1]],
         "Bank",
-        lr=(
-            0.0003
-            if args.dataset == "cicids2017"
-            else 0.001
-        )
+        lr,
+        loss_weights_tensor
     ),
 
     MultiClassNode(
         3,
-        X_train[campus_idx],
-        y_train[campus_idx],
+        X_train[node_indices[2]],
+        y_train[node_indices[2]],
         "Campus",
-        lr=(
-            0.0003
-            if args.dataset == "cicids2017"
-            else 0.001
-        )
+        lr,
+        loss_weights_tensor
     )
 ]
 
@@ -511,17 +597,20 @@ sample_counts = [
 ]
 
 
-local_epochs = (
-    1
-    if args.dataset == "cicids2017"
-    else 3
+print(
+    "\nTotal assigned samples: "
+    f"{sum(sample_counts)}"
 )
 
+
+# ============================================================
+# GLOBAL MODEL
+# ============================================================
 
 global_model = MultiClassIDS(
-    input_dim=input_dim
+    input_dim=input_dim,
+    num_classes=NUM_CLASSES
 )
-
 
 X_test_t = torch.as_tensor(
     X_test,
@@ -529,10 +618,13 @@ X_test_t = torch.as_tensor(
 )
 
 
-history = []
+# ============================================================
+# FEDERATED TRAINING
+# ============================================================
 
 ROUNDS = 15
 
+history = []
 
 print(
     "\n===== FEDERATED NON-IID TRAINING ====="
@@ -553,11 +645,19 @@ for round_num in range(
         global_model.get_weights()
     )
 
+    # --------------------------------------------------------
+    # Send global model to every node
+    # --------------------------------------------------------
+
     for node in nodes:
 
         node.set_weights(
             global_weights
         )
+
+    # --------------------------------------------------------
+    # Local training
+    # --------------------------------------------------------
 
     losses = []
 
@@ -567,9 +667,15 @@ for round_num in range(
             epochs=local_epochs
         )
 
-        losses.append(loss)
+        losses.append(
+            loss
+        )
 
-    averaged = fed_avg(
+    # --------------------------------------------------------
+    # FedAvg
+    # --------------------------------------------------------
+
+    averaged_weights = fed_avg(
         [
             node.get_weights()
             for node in nodes
@@ -578,8 +684,12 @@ for round_num in range(
     )
 
     global_model.set_weights(
-        averaged
+        averaged_weights
     )
+
+    # --------------------------------------------------------
+    # Global evaluation
+    # --------------------------------------------------------
 
     global_model.eval()
 
@@ -589,7 +699,9 @@ for round_num in range(
             global_model(
                 X_test_t
             )
-            .argmax(dim=1)
+            .argmax(
+                dim=1
+            )
             .cpu()
             .numpy()
         )
@@ -612,48 +724,46 @@ for round_num in range(
         {
             "round": round_num,
             "loss": avg_loss,
-            "macro_f1": float(macro_f1)
+            "macro_f1": float(
+                macro_f1
+            )
         }
     )
 
     print(
         f"Global Macro F1: "
-        f"{macro_f1:.4f}"
+        f"{macro_f1:.4f} | "
+        f"Loss: {avg_loss:.4f}"
     )
 
+
+# ============================================================
+# FINAL REPORT
+# ============================================================
 
 print(
-    f"\n===== FINAL REPORT "
-    f"(NON-IID, {args.dataset}) ====="
+    "\n===== FINAL REPORT ====="
 )
-
-
-global_model.eval()
-
-with torch.no_grad():
-
-    final_predictions = (
-        global_model(X_test_t)
-        .argmax(dim=1)
-        .cpu()
-        .numpy()
-    )
-
 
 print(
     classification_report(
         y_test,
-        final_predictions,
+        predictions,
         target_names=CLASS_NAMES,
         zero_division=0
     )
 )
 
 
+# ============================================================
+# SAVE MODEL
+# ============================================================
+
 torch.save(
     global_model.state_dict(),
     OUT_MODEL
 )
+
 
 with open(
     OUT_HISTORY,
@@ -669,9 +779,9 @@ with open(
 
 
 print(
-    f"Model saved to {OUT_MODEL}"
+    f"Model saved to:\n{OUT_MODEL}"
 )
 
 print(
-    f"History saved to {OUT_HISTORY}"
+    f"History saved to:\n{OUT_HISTORY}"
 )

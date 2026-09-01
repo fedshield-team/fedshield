@@ -1,17 +1,29 @@
 """
-FedShield — Live packet capture, detection, explainability and response.
+FedShield — Live Packet Capture
 
-Updated version:
-- Packet/flow-aware feature extraction
-- Short-term connection statistics
-- Safer ML attack confirmation
-- Independent port-scan detection
-- SHAP explanations
-- SQLite logging
-- JSON live snapshot
-- Online retraining
-- Hot model reload
-- Windows Firewall blocking for confirmed port scans only
+Pipeline:
+
+Packet
+  ↓
+41 NSL-KDD-compatible features
+  ↓
+Saved categorical encoders
+  ↓
+Saved StandardScaler
+  ↓
+MultiClassIDS
+  ↓
+Normal / DoS / Probe / R2L / U2R
+  ↓
+Rule confirmation
+  ↓
+SHAP explanation
+  ↓
+Incident report
+  ↓
+Optional firewall response
+  ↓
+Online retraining buffer
 """
 
 import json
@@ -21,21 +33,23 @@ import threading
 import time
 import uuid
 import sqlite3
+
 from collections import defaultdict, deque
 from datetime import datetime, timezone
 
-import numpy as np
 import joblib
+import numpy as np
 import shap
 import torch
-import torch.nn as nn
 
 from scapy.all import (
     sniff,
     IP,
     TCP,
-    UDP,
+    UDP
 )
+
+from model import MultiClassIDS
 
 from llm_incident_report import (
     generate_incident_report,
@@ -55,41 +69,49 @@ from online_retrain import (
 # PATHS
 # ============================================================
 
-BASE = os.path.dirname(os.path.abspath(__file__))
+BASE = os.path.dirname(
+    os.path.abspath(__file__)
+)
 
 MODEL_PATH = os.path.join(
     BASE,
     "models",
-    "federated_noniid_model.pth",
+    "federated_noniid_model.pth"
 )
 
 SCALER_PATH = os.path.join(
     BASE,
     "models",
-    "scaler_multiclass.pkl",
+    "scaler_multiclass.pkl"
+)
+
+ENCODERS_PATH = os.path.join(
+    BASE,
+    "models",
+    "encoders_multiclass.pkl"
 )
 
 DB_PATH = os.path.join(
     BASE,
     "models",
-    "fedshield_logs.db",
+    "fedshield_logs.db"
 )
 
 LIVE_LOG_PATH = os.path.join(
     BASE,
     "models",
-    "live_log.json",
+    "live_log.json"
 )
 
 TRAIN_BG_PATH = os.path.join(
     BASE,
     "data",
-    "X_train_mc.npy",
+    "X_train_mc.npy"
 )
 
 
 # ============================================================
-# CLASS / FEATURE DEFINITIONS
+# CLASSES
 # ============================================================
 
 CLASS_NAMES = [
@@ -97,9 +119,8 @@ CLASS_NAMES = [
     "DoS",
     "Probe",
     "R2L",
-    "U2R",
+    "U2R"
 ]
-
 
 FEATURE_NAMES = [
     "duration",
@@ -146,124 +167,37 @@ FEATURE_NAMES = [
 ]
 
 
-PROTO_MAP = {
-    "icmp": 0,
-    "tcp": 1,
-    "udp": 2,
-}
+# ============================================================
+# THRESHOLDS
+# ============================================================
 
+ML_ATTACK_THRESHOLD = 0.92
 
-# Common NSL-KDD service approximation.
-# If your training pipeline has a dedicated encoder,
-# the code below will try to use it.
-SERVICE_MAP = {
-    20: 0,
-    21: 1,
-    22: 2,
-    23: 3,
-    25: 4,
-    53: 5,
-    80: 6,
-    110: 7,
-    111: 8,
-    119: 9,
-    135: 10,
-    139: 11,
-    143: 12,
-    443: 13,
-    445: 14,
-    993: 15,
-    995: 16,
-    1433: 17,
-    3306: 18,
-    3389: 19,
-    8080: 20,
-}
+ML_SUSPICIOUS_THRESHOLD = 0.70
 
+ML_CONFIRMATIONS_REQUIRED = 3
 
-# TCP flag approximation.
-FLAG_MAP = {
-    "S": 0,
-    "SA": 1,
-    "A": 2,
-    "FA": 3,
-    "F": 4,
-    "RA": 5,
-    "R": 6,
-    "PA": 7,
-    "P": 8,
-}
+ML_CONFIRMATION_WINDOW = 10
+
+SCAN_PORT_THRESHOLD = 8
+
+SCAN_WINDOW_SECONDS = 3
+
+PROBE_CONFIDENCE_THRESHOLD = 0.85
+
+WINDOW_SECONDS = 10
 
 
 # ============================================================
-# MODEL
-# ============================================================
-
-class MultiClassIDS(nn.Module):
-
-    def __init__(
-        self,
-        input_dim=41,
-        num_classes=5,
-    ):
-        super().__init__()
-
-        self.network = nn.Sequential(
-
-            nn.Linear(
-                input_dim,
-                256,
-            ),
-
-            nn.BatchNorm1d(
-                256,
-            ),
-
-            nn.ReLU(),
-
-            nn.Dropout(
-                0.3,
-            ),
-
-            nn.Linear(
-                256,
-                128,
-            ),
-
-            nn.BatchNorm1d(
-                128,
-            ),
-
-            nn.ReLU(),
-
-            nn.Dropout(
-                0.2,
-            ),
-
-            nn.Linear(
-                128,
-                64,
-            ),
-
-            nn.ReLU(),
-
-            nn.Linear(
-                64,
-                num_classes,
-            ),
-        )
-
-    def forward(self, x):
-        return self.network(x)
-
-
-# ============================================================
-# DIRECTORY SETUP
+# DIRECTORY
 # ============================================================
 
 os.makedirs(
-    os.path.join(BASE, "models"),
-    exist_ok=True,
+    os.path.join(
+        BASE,
+        "models"
+    ),
+    exist_ok=True
 )
 
 
@@ -273,63 +207,61 @@ os.makedirs(
 
 def init_db():
 
-    conn = sqlite3.connect(
+    with sqlite3.connect(
         DB_PATH,
-        timeout=10,
-    )
-
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS detections (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT,
-            src TEXT,
-            dst TEXT,
-            proto TEXT,
-            prediction TEXT,
-            confidence REAL,
-            tag TEXT,
-            blocked INTEGER DEFAULT 0,
-            incident_id TEXT
-        )
-        """
-    )
-
-    columns = {
-        row[1]
-        for row in conn.execute(
-            "PRAGMA table_info(detections)"
-        )
-    }
-
-    if "blocked" not in columns:
+        timeout=10
+    ) as conn:
 
         conn.execute(
             """
-            ALTER TABLE detections
-            ADD COLUMN blocked INTEGER DEFAULT 0
+            CREATE TABLE IF NOT EXISTS detections (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT,
+                src TEXT,
+                dst TEXT,
+                proto TEXT,
+                prediction TEXT,
+                confidence REAL,
+                tag TEXT,
+                blocked INTEGER DEFAULT 0,
+                incident_id TEXT
+            )
             """
         )
 
-    if "incident_id" not in columns:
+        columns = {
+            row[1]
+            for row in conn.execute(
+                "PRAGMA table_info(detections)"
+            )
+        }
 
-        conn.execute(
-            """
-            ALTER TABLE detections
-            ADD COLUMN incident_id TEXT
-            """
-        )
+        if "blocked" not in columns:
 
-    conn.commit()
+            conn.execute(
+                """
+                ALTER TABLE detections
+                ADD COLUMN blocked INTEGER DEFAULT 0
+                """
+            )
 
-    return conn
+        if "incident_id" not in columns:
+
+            conn.execute(
+                """
+                ALTER TABLE detections
+                ADD COLUMN incident_id TEXT
+                """
+            )
 
 
-def db_insert_detection(entry):
+def db_insert_detection(
+    entry
+):
 
     with sqlite3.connect(
         DB_PATH,
-        timeout=10,
+        timeout=10
     ) as conn:
 
         cursor = conn.execute(
@@ -356,72 +288,88 @@ def db_insert_detection(entry):
                 entry["confidence"],
                 entry["tag"],
                 entry["incident_id"],
-            ),
+            )
         )
-
-        conn.commit()
 
         return cursor.lastrowid
 
 
-def mark_blocked(row_id):
+def mark_blocked(
+    row_id
+):
+
+    if row_id is None:
+        return
 
     with sqlite3.connect(
         DB_PATH,
-        timeout=10,
+        timeout=10
     ) as conn:
 
         conn.execute(
             """
             UPDATE detections
-            SET blocked = 1
-            WHERE id = ?
+            SET blocked=1
+            WHERE id=?
             """,
-            (row_id,),
+            (row_id,)
         )
 
-        conn.commit()
 
-
-db_conn = init_db()
-db_conn.close()
-
+init_db()
 init_incident_reports_table()
 init_retrain_buffer()
 
 
 # ============================================================
-# LOAD MODEL
+# MODEL
 # ============================================================
 
-model = MultiClassIDS()
-
-if not os.path.exists(MODEL_PATH):
+if not os.path.exists(
+    MODEL_PATH
+):
 
     raise FileNotFoundError(
-        f"Model not found: {MODEL_PATH}"
+        f"Missing model:\n"
+        f"{MODEL_PATH}\n\n"
+        "Run federated_noniid.py first."
     )
 
+
+model = MultiClassIDS(
+    input_dim=41,
+    num_classes=5
+)
+
+state = torch.load(
+    MODEL_PATH,
+    map_location="cpu",
+    weights_only=True
+)
 
 model.load_state_dict(
-    torch.load(
-        MODEL_PATH,
-        map_location="cpu",
-        weights_only=True,
-    )
+    state
 )
 
 model.eval()
 
+print(
+    "Multi-class federated model loaded."
+)
+
 
 # ============================================================
-# LOAD SCALER
+# SCALER
 # ============================================================
 
-if not os.path.exists(SCALER_PATH):
+if not os.path.exists(
+    SCALER_PATH
+):
 
     raise FileNotFoundError(
-        f"Scaler not found: {SCALER_PATH}"
+        f"Missing scaler:\n"
+        f"{SCALER_PATH}\n\n"
+        "Run preprocess_multiclass.py first."
     )
 
 
@@ -429,7 +377,68 @@ scaler = joblib.load(
     SCALER_PATH
 )
 
-print("Model + scaler loaded.")
+
+# ============================================================
+# ENCODERS
+# ============================================================
+
+if not os.path.exists(
+    ENCODERS_PATH
+):
+
+    raise FileNotFoundError(
+        f"Missing encoders:\n"
+        f"{ENCODERS_PATH}\n\n"
+        "Run preprocess_multiclass.py first."
+    )
+
+
+encoders = joblib.load(
+    ENCODERS_PATH
+)
+
+
+required_encoders = {
+    "protocol_type",
+    "service",
+    "flag"
+}
+
+missing_encoders = (
+    required_encoders
+    -
+    set(encoders.keys())
+)
+
+if missing_encoders:
+
+    raise ValueError(
+        "Missing categorical encoders: "
+        +
+        ", ".join(
+            sorted(
+                missing_encoders
+            )
+        )
+    )
+
+
+protocol_encoder = encoders[
+    "protocol_type"
+]
+
+service_encoder = encoders[
+    "service"
+]
+
+flag_encoder = encoders[
+    "flag"
+]
+
+
+print(
+    "Training categorical encoders loaded."
+)
 
 
 # ============================================================
@@ -438,53 +447,69 @@ print("Model + scaler loaded.")
 
 current_model_version = None
 
-if os.path.exists(VERSION_PATH):
+
+def read_model_version():
+
+    if not os.path.exists(
+        VERSION_PATH
+    ):
+
+        return None
 
     try:
 
         with open(
             VERSION_PATH,
-            encoding="utf-8",
+            encoding="utf-8"
         ) as f:
 
-            current_model_version = (
-                json.load(f).get("version")
+            return json.load(
+                f
+            ).get(
+                "version"
             )
 
-    except (
-        OSError,
-        ValueError,
-        json.JSONDecodeError,
-    ):
+    except Exception:
 
-        current_model_version = None
+        return None
+
+
+current_model_version = (
+    read_model_version()
+)
 
 
 # ============================================================
 # SHAP
 # ============================================================
 
+shap_explainer = None
+
 try:
 
-    background = np.load(
+    if os.path.exists(
         TRAIN_BG_PATH
-    )[:100]
+    ):
 
-    shap_explainer = shap.DeepExplainer(
-        model,
-        torch.as_tensor(
+        background = np.load(
+            TRAIN_BG_PATH
+        )[:100]
+
+        background_tensor = torch.as_tensor(
             background,
-            dtype=torch.float32,
-        ),
-    )
+            dtype=torch.float32
+        )
 
-    print(
-        "SHAP DeepExplainer initialised."
-    )
+        shap_explainer = shap.DeepExplainer(
+            model,
+            background_tensor
+        )
+
+        print(
+            "SHAP DeepExplainer initialised."
+        )
 
 except Exception as e:
-
-    shap_explainer = None
 
     print(
         f"[WARN] SHAP disabled: {e}"
@@ -494,19 +519,31 @@ except Exception as e:
 def get_top_shap_features(
     x_tensor,
     pred_class,
-    top_n=3,
+    top_n=3
 ):
 
     if shap_explainer is None:
+
         return []
 
     try:
 
-        values = shap_explainer.shap_values(
-            x_tensor
+        values = (
+            shap_explainer.shap_values(
+                x_tensor
+            )
         )
 
-        if isinstance(values, list):
+        if isinstance(
+            values,
+            list
+        ):
+
+            if pred_class >= len(
+                values
+            ):
+
+                return []
 
             class_values = np.asarray(
                 values[pred_class]
@@ -514,29 +551,41 @@ def get_top_shap_features(
 
         else:
 
-            arr = np.asarray(values)
+            arr = np.asarray(
+                values
+            )
 
-            if (
-                arr.ndim == 3
-                and arr.shape[1] == len(FEATURE_NAMES)
-            ):
+            if arr.ndim == 3:
 
-                class_values = arr[
-                    0,
-                    :,
-                    pred_class,
-                ]
+                # (samples, features, classes)
+                if (
+                    arr.shape[0] == 1
+                    and
+                    arr.shape[2] == 5
+                ):
 
-            elif (
-                arr.ndim == 3
-                and arr.shape[2] == len(FEATURE_NAMES)
-            ):
+                    class_values = arr[
+                        0,
+                        :,
+                        pred_class
+                    ]
 
-                class_values = arr[
-                    pred_class,
-                    0,
-                    :,
-                ]
+                # (classes, samples, features)
+                elif (
+                    arr.shape[0] == 5
+                    and
+                    arr.shape[1] == 1
+                ):
+
+                    class_values = arr[
+                        pred_class,
+                        0,
+                        :
+                    ]
+
+                else:
+
+                    return []
 
             elif arr.ndim == 2:
 
@@ -544,19 +593,30 @@ def get_top_shap_features(
 
             else:
 
-                class_values = arr.reshape(-1)
+                return []
 
-        if len(class_values) != len(FEATURE_NAMES):
+        class_values = np.asarray(
+            class_values
+        ).reshape(-1)
+
+        if len(
+            class_values
+        ) != 41:
+
             return []
 
         indices = np.argsort(
-            np.abs(class_values)
+            np.abs(
+                class_values
+            )
         )[::-1][:top_n]
 
         return [
             (
                 FEATURE_NAMES[i],
-                float(class_values[i]),
+                float(
+                    class_values[i]
+                )
             )
             for i in indices
         ]
@@ -564,43 +624,30 @@ def get_top_shap_features(
     except Exception as e:
 
         print(
-            f"[WARN] SHAP computation failed: {e}"
+            f"[WARN] SHAP computation failed: "
+            f"{e}"
         )
 
         return []
 
 
 # ============================================================
-# LIVE STATE
+# STATE
 # ============================================================
 
 reported_incidents = set()
-
-log = []
 
 blocked_ips = set()
 
 alerted_pairs = set()
 
-retrain_lock = threading.Lock()
-
-retrain_in_progress = False
-
-
-# ------------------------------------------------------------
-# General short-term windows
-# ------------------------------------------------------------
-
-WINDOW_SECONDS = 10
+attack_evidence = defaultdict(
+    deque
+)
 
 recent_packets = deque(
     maxlen=5000
 )
-
-
-# ------------------------------------------------------------
-# Flow state
-# ------------------------------------------------------------
 
 flow_state = defaultdict(
     lambda: {
@@ -613,246 +660,139 @@ flow_state = defaultdict(
         "ack": 0,
         "rst": 0,
         "fin": 0,
-        "errors": 0,
-        "services": set(),
     }
 )
 
-
-# ------------------------------------------------------------
-# Host state
-# ------------------------------------------------------------
-
 host_stats = defaultdict(
     lambda: {
-        "timestamps": deque(maxlen=500),
-        "dsts": deque(maxlen=500),
-        "ports": deque(maxlen=500),
-        "services": deque(maxlen=500),
+        "timestamps": deque(
+            maxlen=500
+        ),
+        "dsts": deque(
+            maxlen=500
+        ),
+        "ports": deque(
+            maxlen=500
+        ),
+        "services": deque(
+            maxlen=500
+        ),
         "errors": 0,
         "syn": 0,
         "packets": 0,
     }
 )
 
+log = []
 
-# ============================================================
-# DETECTION THRESHOLDS
-# ============================================================
+retrain_lock = threading.Lock()
 
-# IMPORTANT:
-# ML predictions alone should not automatically block hosts.
-
-ML_ATTACK_THRESHOLD = 0.92
-
-ML_CONFIRMATIONS_REQUIRED = 3
-
-ML_CONFIRMATION_WINDOW = 10
-
-PROBE_CONFIDENCE_THRESHOLD = 0.85
-
-SCAN_PORT_THRESHOLD = 8
-
-SCAN_WINDOW_SECONDS = 3
+retrain_in_progress = False
 
 
 # ============================================================
-# ML CONFIRMATION STATE
+# ENCODING
 # ============================================================
 
-attack_evidence = defaultdict(
-    lambda: deque()
-)
-
-
-def register_attack_evidence(
-    src,
-    dst,
-    label,
-    confidence,
+def encode_category(
+    encoder,
+    value,
+    fallback=None
 ):
 
-    now = time.monotonic()
+    value = str(
+        value
+    ).strip()
 
-    key = (
-        src,
-        dst,
-        label,
+    classes = list(
+        encoder.classes_
     )
 
-    evidence = attack_evidence[key]
+    if value in classes:
 
-    while evidence:
+        return int(
+            encoder.transform(
+                [value]
+            )[0]
+        )
 
-        if (
-            now - evidence[0]
-            > ML_CONFIRMATION_WINDOW
-        ):
+    if fallback is not None:
 
-            evidence.popleft()
+        fallback = str(
+            fallback
+        ).strip()
 
-        else:
+        if fallback in classes:
 
-            break
+            return int(
+                encoder.transform(
+                    [fallback]
+                )[0]
+            )
 
-    if confidence >= ML_ATTACK_THRESHOLD:
-
-        evidence.append(now)
-
-    return len(evidence)
+    # Deterministic unknown-category fallback.
+    return 0
 
 
 # ============================================================
-# FIREWALL
+# SERVICE MAPPING
 # ============================================================
 
-def block_ip(ip):
+PORT_SERVICE_MAP = {
 
-    """
-    Block an IP using Windows Firewall.
-
-    Only used for independently confirmed
-    port scans.
-
-    Requires Administrator privileges.
-    """
-
-    import ipaddress
-
-    try:
-
-        ipaddress.ip_address(ip)
-
-    except ValueError:
-
-        print(
-            f"[WARN] Invalid IP: {ip}"
-        )
-
-        return False
-
-    if ip in blocked_ips:
-        return False
-
-    rule_name = (
-        "FedShield_Block_"
-        + ip.replace(":", "_")
-        .replace(".", "_")
-    )
-
-    cmd = [
-        "netsh",
-        "advfirewall",
-        "firewall",
-        "add",
-        "rule",
-        f"name={rule_name}",
-        "dir=in",
-        "action=block",
-        f"remoteip={ip}",
-    ]
-
-    try:
-
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            shell=False,
-            timeout=10,
-        )
-
-        if result.returncode == 0:
-
-            blocked_ips.add(ip)
-
-            return True
-
-        print(
-            f"[WARN] Could not block {ip}: "
-            f"{result.stderr.strip()}"
-        )
-
-    except (
-        OSError,
-        subprocess.SubprocessError,
-    ) as e:
-
-        print(
-            f"[WARN] Block failed for {ip}: {e}"
-        )
-
-    return False
+    20: "ftp_data",
+    21: "ftp",
+    22: "ssh",
+    23: "telnet",
+    25: "smtp",
+    53: "domain",
+    80: "http",
+    110: "pop_3",
+    111: "sunrpc",
+    119: "nntp",
+    135: "msrpc",
+    139: "netbios_ssn",
+    143: "imap4",
+    443: "http",
+    993: "imap4",
+    995: "pop_3",
+    1433: "sql_net",
+    3306: "mysql",
+    3389: "remote_job",
+    8080: "http",
+}
 
 
-# ============================================================
-# PORT SCAN DETECTION
-# ============================================================
-
-port_scan_tracker = defaultdict(
-    lambda: {
-        "ports": set(),
-        "first_seen": None,
-    }
-)
-
-
-def check_port_scan(
-    src,
-    dst,
-    dport,
-    proto,
+def infer_service(
+    dport
 ):
 
-    if (
-        proto != "tcp"
-        or dport is None
-    ):
+    if dport is None:
 
-        return False
+        return encode_category(
+            service_encoder,
+            "other"
+        )
 
-    key = (
-        src,
-        dst,
+    service_name = PORT_SERVICE_MAP.get(
+        int(dport),
+        "other"
     )
 
-    now = time.monotonic()
-
-    entry = port_scan_tracker[key]
-
-    if (
-        entry["first_seen"] is None
-        or
-        now - entry["first_seen"]
-        > SCAN_WINDOW_SECONDS
-    ):
-
-        entry["first_seen"] = now
-        entry["ports"] = set()
-
-    entry["ports"].add(
-        int(dport)
+    return encode_category(
+        service_encoder,
+        service_name,
+        fallback="other"
     )
-
-    if (
-        len(entry["ports"])
-        >= SCAN_PORT_THRESHOLD
-        and
-        key not in alerted_pairs
-    ):
-
-        alerted_pairs.add(key)
-
-        return True
-
-    return False
 
 
 # ============================================================
 # PACKET HELPERS
 # ============================================================
 
-def get_protocol(pkt):
+def get_protocol(
+    pkt
+):
 
     if TCP in pkt:
         return "tcp"
@@ -863,108 +803,78 @@ def get_protocol(pkt):
     return "icmp"
 
 
-def get_destination_port(pkt):
+def get_destination_port(
+    pkt
+):
 
     if TCP in pkt:
-        return int(pkt[TCP].dport)
+
+        return int(
+            pkt[TCP].dport
+        )
 
     if UDP in pkt:
-        return int(pkt[UDP].dport)
+
+        return int(
+            pkt[UDP].dport
+        )
 
     return None
 
 
-def get_source_port(pkt):
+def get_source_port(
+    pkt
+):
 
     if TCP in pkt:
-        return int(pkt[TCP].sport)
+
+        return int(
+            pkt[TCP].sport
+        )
 
     if UDP in pkt:
-        return int(pkt[UDP].sport)
+
+        return int(
+            pkt[UDP].sport
+        )
 
     return None
 
 
-def get_tcp_flags(pkt):
+def get_tcp_flags(
+    pkt
+):
 
     if TCP not in pkt:
+
         return ""
 
     try:
-        return str(pkt[TCP].flags)
+
+        return str(
+            pkt[TCP].flags
+        )
+
     except Exception:
+
         return ""
 
 
-def get_service_code(dport):
-
-    if dport is None:
-        return 0
-
-    if dport in SERVICE_MAP:
-        return SERVICE_MAP[dport]
-
-    # Common web / application services
-    if dport in (8000, 8008, 8080, 8081, 8443):
-        return 20
-
-    # Keep unknown services separated from known services.
-    return 21
-
-
-def get_flag_code(flags):
-
-    if not flags:
-        return 0
-
-    if flags in FLAG_MAP:
-        return FLAG_MAP[flags]
-
-    # Normalize common Scapy representations.
-    if "S" in flags and "A" in flags:
-        return FLAG_MAP["SA"]
-
-    if "S" in flags:
-        return FLAG_MAP["S"]
-
-    if "R" in flags and "A" in flags:
-        return FLAG_MAP["RA"]
-
-    if "R" in flags:
-        return FLAG_MAP["R"]
-
-    if "F" in flags and "A" in flags:
-        return FLAG_MAP["FA"]
-
-    if "F" in flags:
-        return FLAG_MAP["F"]
-
-    if "P" in flags and "A" in flags:
-        return FLAG_MAP["PA"]
-
-    if "P" in flags:
-        return FLAG_MAP["P"]
-
-    if "A" in flags:
-        return FLAG_MAP["A"]
-
-    return 0
-
-
 # ============================================================
-# CLEAN OLD STATE
+# STATE CLEANUP
 # ============================================================
 
 def cleanup_state():
 
     now = time.monotonic()
 
-    # Packet history
     while recent_packets:
 
         if (
-            now - recent_packets[0]["time"]
-            > WINDOW_SECONDS
+            now -
+            recent_packets[0]["time"]
+            >
+            WINDOW_SECONDS
         ):
 
             recent_packets.popleft()
@@ -973,18 +883,21 @@ def cleanup_state():
 
             break
 
-    # Host history
     for host, stats in list(
         host_stats.items()
     ):
 
-        timestamps = stats["timestamps"]
+        timestamps = stats[
+            "timestamps"
+        ]
 
         while timestamps:
 
             if (
-                now - timestamps[0]
-                > WINDOW_SECONDS
+                now -
+                timestamps[0]
+                >
+                WINDOW_SECONDS
             ):
 
                 timestamps.popleft()
@@ -997,7 +910,7 @@ def cleanup_state():
 
             host_stats.pop(
                 host,
-                None,
+                None
             )
 
 
@@ -1005,21 +918,9 @@ def cleanup_state():
 # FEATURE EXTRACTION
 # ============================================================
 
-def extract_features(pkt):
-
-    """
-    Convert a live packet into a 41-feature
-    NSL-KDD-style numerical representation.
-
-    IMPORTANT:
-    A live packet cannot reproduce every NSL-KDD
-    feature exactly because NSL-KDD is connection/
-    flow based.
-
-    Therefore this function uses short-term
-    connection and host statistics instead of
-    filling almost everything with zeros.
-    """
+def extract_features(
+    pkt
+):
 
     if IP not in pkt:
 
@@ -1029,26 +930,42 @@ def extract_features(pkt):
 
     now = time.monotonic()
 
-    proto = get_protocol(pkt)
+    proto = get_protocol(
+        pkt
+    )
 
     src = pkt[IP].src
     dst = pkt[IP].dst
 
-    dport = get_destination_port(pkt)
-    sport = get_source_port(pkt)
+    dport = get_destination_port(
+        pkt
+    )
+
+    sport = get_source_port(
+        pkt
+    )
 
     packet_length = int(
         len(pkt)
     )
 
-    flags = get_tcp_flags(pkt)
+    flags = get_tcp_flags(
+        pkt
+    )
 
-    service_code = get_service_code(
+    protocol_code = encode_category(
+        protocol_encoder,
+        proto
+    )
+
+    service_code = infer_service(
         dport
     )
 
-    flag_code = get_flag_code(
-        flags
+    flag_code = encode_category(
+        flag_encoder,
+        flags,
+        fallback="OTH"
     )
 
     flow_key = (
@@ -1056,7 +973,7 @@ def extract_features(pkt):
         dst,
         sport,
         dport,
-        proto,
+        proto
     )
 
     flow = flow_state[
@@ -1087,7 +1004,9 @@ def extract_features(pkt):
         if "F" in flags:
             flow["fin"] += 1
 
-    host = host_stats[src]
+    host = host_stats[
+        src
+    ]
 
     host["timestamps"].append(
         now
@@ -1109,90 +1028,104 @@ def extract_features(pkt):
 
     host["packets"] += 1
 
-    # A SYN without ACK is a useful signal,
-    # but it is NOT automatically an error.
     if (
         TCP in pkt
-        and "S" in flags
-        and "A" not in flags
+        and
+        "S" in flags
+        and
+        "A" not in flags
     ):
 
         host["syn"] += 1
 
     if (
         TCP in pkt
-        and "R" in flags
+        and
+        "R" in flags
     ):
 
         host["errors"] += 1
-
-    # --------------------------------------------------------
-    # Short-term host statistics
-    # --------------------------------------------------------
 
     count = len(
         host["timestamps"]
     )
 
     unique_dsts = len(
-        set(host["dsts"])
+        set(
+            host["dsts"]
+        )
     )
 
     unique_ports = len(
-        set(host["ports"])
+        set(
+            host["ports"]
+        )
     )
 
     unique_services = len(
-        set(host["services"])
+        set(
+            host["services"]
+        )
     )
 
-    syn_count = host["syn"]
+    syn_count = host[
+        "syn"
+    ]
 
-    error_count = host["errors"]
+    error_count = host[
+        "errors"
+    ]
 
     serror_rate = (
-        syn_count
-        /
-        max(count, 1)
+        syn_count /
+        max(
+            count,
+            1
+        )
     )
 
     rerror_rate = (
-        error_count
-        /
-        max(count, 1)
+        error_count /
+        max(
+            count,
+            1
+        )
     )
 
     same_dst_count = sum(
         1
-        for d in host["dsts"]
-        if d == dst
+        for item in host["dsts"]
+        if item == dst
     )
 
     same_service_count = sum(
         1
-        for s in host["services"]
-        if s == service_code
+        for item in host["services"]
+        if item == service_code
     )
 
     same_dst_rate = (
-        same_dst_count
-        /
-        max(count, 1)
+        same_dst_count /
+        max(
+            count,
+            1
+        )
     )
 
     same_service_rate = (
-        same_service_count
-        /
-        max(len(host["services"]), 1)
+        same_service_count /
+        max(
+            len(
+                host["services"]
+            ),
+            1
+        )
     )
 
     diff_service_rate = (
-        1.0 - same_service_rate
+        1.0 -
+        same_service_rate
     )
-
-    # --------------------------------------------------------
-    # Destination-host statistics
-    # --------------------------------------------------------
 
     destination_packets = 0
     destination_services = 0
@@ -1206,7 +1139,11 @@ def extract_features(pkt):
 
         destination_packets += 1
 
-        if item["service"] == service_code:
+        if (
+            item["service"]
+            ==
+            service_code
+        ):
 
             destination_services += 1
 
@@ -1218,40 +1155,46 @@ def extract_features(pkt):
 
             destination_errors += 1
 
-    dst_host_count = destination_packets
+    dst_host_count = (
+        destination_packets
+    )
 
     dst_host_srv_count = (
         destination_services
     )
 
     dst_host_same_srv_rate = (
-        destination_services
-        /
-        max(destination_packets, 1)
+        destination_services /
+        max(
+            destination_packets,
+            1
+        )
     )
 
     dst_host_diff_srv_rate = (
-        1.0
-        -
+        1.0 -
         dst_host_same_srv_rate
     )
 
     dst_host_same_src_port_rate = (
-        destination_same_source
-        /
-        max(destination_packets, 1)
+        destination_same_source /
+        max(
+            destination_packets,
+            1
+        )
     )
 
     dst_host_srv_diff_host_rate = (
-        1.0
-        -
+        1.0 -
         dst_host_same_src_port_rate
     )
 
     dst_host_serror_rate = (
-        destination_errors
-        /
-        max(destination_packets, 1)
+        destination_errors /
+        max(
+            destination_packets,
+            1
+        )
     )
 
     dst_host_srv_serror_rate = (
@@ -1259,9 +1202,11 @@ def extract_features(pkt):
     )
 
     dst_host_rerror_rate = (
-        destination_errors
-        /
-        max(destination_packets, 1)
+        destination_errors /
+        max(
+            destination_packets,
+            1
+        )
     )
 
     dst_host_srv_rerror_rate = (
@@ -1269,197 +1214,139 @@ def extract_features(pkt):
     )
 
     # --------------------------------------------------------
-    # Create all 41 features
+    # 41 FEATURES
     # --------------------------------------------------------
 
     features = np.zeros(
         41,
-        dtype=np.float32,
+        dtype=np.float32
     )
 
-    # 0 duration
     features[0] = min(
-        now - flow["first_seen"],
-        3600.0,
+        now -
+        flow["first_seen"],
+        3600.0
     )
 
-    # 1 protocol
-    features[1] = PROTO_MAP.get(
-        proto,
-        0,
-    )
+    features[1] = protocol_code
 
-    # 2 service
     features[2] = service_code
 
-    # 3 flag
     features[3] = flag_code
 
-    # 4 source bytes
     features[4] = min(
         flow["src_bytes"],
-        10_000_000,
+        10_000_000
     )
 
-    # 5 destination bytes
     features[5] = min(
         packet_length,
-        10_000_000,
+        10_000_000
     )
 
-    # 6 land
     features[6] = float(
         src == dst
     )
 
-    # 7 wrong fragment
     features[7] = float(
         getattr(
             pkt[IP],
             "frag",
-            0,
+            0
         ) > 0
     )
 
-    # 8 urgent
     features[8] = float(
         TCP in pkt
         and
         getattr(
             pkt[TCP],
             "urgptr",
-            0,
+            0
         ) > 0
     )
 
-    # 9 hot
     features[9] = min(
         unique_services,
-        255,
+        255
     )
 
-    # 10 failed logins
-    features[10] = 0
+    features[10] = 0.0
 
-    # 11 logged in
-    # For live traffic this is approximated by
-    # established TCP traffic.
     features[11] = float(
         TCP in pkt
         and
         "A" in flags
     )
 
-    # 12 compromised
-    features[12] = 0
+    features[12:22] = 0.0
 
-    # 13 root shell
-    features[13] = 0
-
-    # 14 su attempted
-    features[14] = 0
-
-    # 15 num root
-    features[15] = 0
-
-    # 16 file creations
-    features[16] = 0
-
-    # 17 shells
-    features[17] = 0
-
-    # 18 access files
-    features[18] = 0
-
-    # 19 outbound commands
-    features[19] = 0
-
-    # 20 host login
-    features[20] = 0
-
-    # 21 guest login
-    features[21] = 0
-
-    # 22 count
     features[22] = min(
         count,
-        255,
+        255
     )
 
-    # 23 srv_count
     features[23] = min(
         same_service_count,
-        255,
+        255
     )
 
-    # 24 serror_rate
     features[24] = serror_rate
-
-    # 25 srv_serror_rate
     features[25] = serror_rate
 
-    # 26 rerror_rate
     features[26] = rerror_rate
-
-    # 27 srv_rerror_rate
     features[27] = rerror_rate
 
-    # 28 same_srv_rate
     features[28] = same_service_rate
 
-    # 29 diff_srv_rate
     features[29] = diff_service_rate
 
-    # 30 srv_diff_host_rate
     features[30] = (
-        1.0
-        -
-        (
-            same_dst_count
-            /
-            max(count, 1)
-        )
+        1.0 -
+        same_dst_rate
     )
 
-    # 31 dst_host_count
     features[31] = min(
         dst_host_count,
-        255,
+        255
     )
 
-    # 32 dst_host_srv_count
     features[32] = min(
         dst_host_srv_count,
-        255,
+        255
     )
 
-    # 33 dst_host_same_srv_rate
-    features[33] = dst_host_same_srv_rate
+    features[33] = (
+        dst_host_same_srv_rate
+    )
 
-    # 34 dst_host_diff_srv_rate
-    features[34] = dst_host_diff_srv_rate
+    features[34] = (
+        dst_host_diff_srv_rate
+    )
 
-    # 35 dst_host_same_src_port_rate
-    features[35] = dst_host_same_src_port_rate
+    features[35] = (
+        dst_host_same_src_port_rate
+    )
 
-    # 36 dst_host_srv_diff_host_rate
-    features[36] = dst_host_srv_diff_host_rate
+    features[36] = (
+        dst_host_srv_diff_host_rate
+    )
 
-    # 37 dst_host_serror_rate
-    features[37] = dst_host_serror_rate
+    features[37] = (
+        dst_host_serror_rate
+    )
 
-    # 38 dst_host_srv_serror_rate
-    features[38] = dst_host_srv_serror_rate
+    features[38] = (
+        dst_host_srv_serror_rate
+    )
 
-    # 39 dst_host_rerror_rate
-    features[39] = dst_host_rerror_rate
+    features[39] = (
+        dst_host_rerror_rate
+    )
 
-    # 40 dst_host_srv_rerror_rate
-    features[40] = dst_host_srv_rerror_rate
-
-    # --------------------------------------------------------
-    # Save packet in recent history
-    # --------------------------------------------------------
+    features[40] = (
+        dst_host_srv_rerror_rate
+    )
 
     recent_packets.append(
         {
@@ -1470,34 +1357,259 @@ def extract_features(pkt):
             "sport": sport,
             "dport": dport,
             "service": service_code,
-            "error": bool(
+            "error": (
                 TCP in pkt
-                and "R" in flags
-            ),
+                and
+                "R" in flags
+            )
         }
     )
 
     meta = {
+
         "src": src,
         "dst": dst,
         "proto": proto,
         "sport": sport,
         "dport": dport,
-        "service": service_code,
-        "flag": flags,
-        "count": count,
-        "unique_ports": unique_ports,
-        "unique_dsts": unique_dsts,
-        "unique_services": unique_services,
-        "syn_count": syn_count,
-        "error_count": error_count,
-        "flow_packets": flow["packets"],
-        "flow_duration": (
-            now - flow["first_seen"]
-        ),
+
+        "service":
+            service_code,
+
+        "flag":
+            flags,
+
+        "count":
+            count,
+
+        "unique_ports":
+            unique_ports,
+
+        "unique_dsts":
+            unique_dsts,
+
+        "unique_services":
+            unique_services,
+
+        "syn_count":
+            syn_count,
+
+        "error_count":
+            error_count,
+
+        "flow_packets":
+            flow["packets"],
+
+        "flow_duration":
+            now -
+            flow["first_seen"]
     }
 
     return features, meta
+
+
+# ============================================================
+# ATTACK EVIDENCE
+# ============================================================
+
+def register_attack_evidence(
+    src,
+    dst,
+    label,
+    confidence
+):
+
+    now = time.monotonic()
+
+    key = (
+        src,
+        dst,
+        label
+    )
+
+    evidence = attack_evidence[
+        key
+    ]
+
+    while evidence:
+
+        if (
+            now -
+            evidence[0]
+            >
+            ML_CONFIRMATION_WINDOW
+        ):
+
+            evidence.popleft()
+
+        else:
+
+            break
+
+    if (
+        confidence
+        >=
+        ML_ATTACK_THRESHOLD
+    ):
+
+        evidence.append(
+            now
+        )
+
+    return len(
+        evidence
+    )
+
+
+# ============================================================
+# PORT SCAN DETECTION
+# ============================================================
+
+port_scan_tracker = defaultdict(
+    lambda: {
+        "ports": set(),
+        "first_seen": None
+    }
+)
+
+
+def check_port_scan(
+    src,
+    dst,
+    dport,
+    proto
+):
+
+    if (
+        proto != "tcp"
+        or
+        dport is None
+    ):
+
+        return False
+
+    key = (
+        src,
+        dst
+    )
+
+    now = time.monotonic()
+
+    entry = port_scan_tracker[
+        key
+    ]
+
+    if (
+        entry["first_seen"] is None
+        or
+        now -
+        entry["first_seen"]
+        >
+        SCAN_WINDOW_SECONDS
+    ):
+
+        entry["first_seen"] = now
+        entry["ports"] = set()
+
+    entry["ports"].add(
+        int(dport)
+    )
+
+    if (
+        len(
+            entry["ports"]
+        )
+        >=
+        SCAN_PORT_THRESHOLD
+        and
+        key not in alerted_pairs
+    ):
+
+        alerted_pairs.add(
+            key
+        )
+
+        return True
+
+    return False
+
+
+# ============================================================
+# FIREWALL
+# ============================================================
+
+def block_ip(
+    ip
+):
+
+    import ipaddress
+
+    try:
+
+        ipaddress.ip_address(
+            ip
+        )
+
+    except ValueError:
+
+        return False
+
+    if ip in blocked_ips:
+
+        return False
+
+    rule_name = (
+        "FedShield_Block_"
+        +
+        ip.replace(
+            ".",
+            "_"
+        )
+    )
+
+    cmd = [
+        "netsh",
+        "advfirewall",
+        "firewall",
+        "add",
+        "rule",
+        f"name={rule_name}",
+        "dir=in",
+        "action=block",
+        f"remoteip={ip}"
+    ]
+
+    try:
+
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            shell=False,
+            timeout=10
+        )
+
+        if result.returncode == 0:
+
+            blocked_ips.add(
+                ip
+            )
+
+            return True
+
+        print(
+            "[WARN] Firewall block failed: "
+            +
+            result.stderr.strip()
+        )
+
+    except Exception as e:
+
+        print(
+            f"[WARN] Firewall error: {e}"
+        )
+
+    return False
 
 
 # ============================================================
@@ -1510,13 +1622,13 @@ def maybe_generate_incident_report(
     confidence,
     x_tensor,
     pred_class,
-    force=False,
+    force=False
 ):
 
     key = (
         meta["src"],
         meta["dst"],
-        label,
+        label
     )
 
     if (
@@ -1527,7 +1639,9 @@ def maybe_generate_incident_report(
 
         return None
 
-    reported_incidents.add(key)
+    reported_incidents.add(
+        key
+    )
 
     incident_id = str(
         uuid.uuid4()
@@ -1542,14 +1656,10 @@ def maybe_generate_incident_report(
             meta["dst"],
 
         "src_port":
-            meta["sport"]
-            if meta["sport"] is not None
-            else "N/A",
+            meta["sport"],
 
         "dst_port":
-            meta["dport"]
-            if meta["dport"] is not None
-            else "N/A",
+            meta["dport"],
 
         "protocol":
             meta["proto"],
@@ -1563,7 +1673,7 @@ def maybe_generate_incident_report(
         "flow_duration":
             round(
                 meta["flow_duration"],
-                3,
+                3
             ),
 
         "unique_ports":
@@ -1576,13 +1686,13 @@ def maybe_generate_incident_report(
             meta["syn_count"],
 
         "error_count":
-            meta["error_count"],
+            meta["error_count"]
     }
 
     shap_features = (
         get_top_shap_features(
             x_tensor,
-            pred_class,
+            pred_class
         )
     )
 
@@ -1591,7 +1701,7 @@ def maybe_generate_incident_report(
         flow_stats,
         label,
         confidence,
-        shap_features,
+        shap_features
     )
 
     print(
@@ -1604,7 +1714,7 @@ def maybe_generate_incident_report(
 
 
 # ============================================================
-# ONLINE RETRAINING
+# ONLINE RETRAIN
 # ============================================================
 
 def maybe_trigger_retrain():
@@ -1614,6 +1724,7 @@ def maybe_trigger_retrain():
     with retrain_lock:
 
         if retrain_in_progress:
+
             return
 
         retrain_in_progress = True
@@ -1632,19 +1743,23 @@ def maybe_trigger_retrain():
 
                 print(
                     "[online_retrain] "
-                    f"{result.get(
-                        'reason',
+                    +
+                    str(
                         result.get(
-                            'error',
-                            'done',
-                        ),
-                    )}"
+                            "reason",
+                            result.get(
+                                "error",
+                                "done"
+                            )
+                        )
+                    )
                 )
 
         except Exception as e:
 
             print(
-                f"[WARN] Online retraining failed: {e}"
+                f"[WARN] Online retraining failed: "
+                f"{e}"
             )
 
         finally:
@@ -1655,7 +1770,7 @@ def maybe_trigger_retrain():
 
     threading.Thread(
         target=worker,
-        daemon=True,
+        daemon=True
     ).start()
 
 
@@ -1667,60 +1782,46 @@ def maybe_hot_reload_model():
 
     global current_model_version
 
-    if not os.path.exists(
-        VERSION_PATH
+    version = read_model_version()
+
+    if (
+        version is None
+        or
+        version ==
+        current_model_version
     ):
 
         return
 
     try:
 
-        with open(
-            VERSION_PATH,
-            encoding="utf-8",
-        ) as f:
-
-            info = json.load(f)
-
-        version = info.get(
-            "version"
+        state = torch.load(
+            MODEL_PATH,
+            map_location="cpu",
+            weights_only=True
         )
 
-        if (
+        model.load_state_dict(
+            state
+        )
+
+        model.eval()
+
+        current_model_version = (
             version
-            and
-            version != current_model_version
-        ):
-
-            state = torch.load(
-                MODEL_PATH,
-                map_location="cpu",
-                weights_only=True,
-            )
-
-            model.load_state_dict(
-                state
-            )
-
-            model.eval()
-
-            current_model_version = version
-
-            print(
-                "[online_retrain] "
-                f"Hot-reloaded model "
-                f"version {version}."
-            )
-
-    except (
-        OSError,
-        ValueError,
-        RuntimeError,
-        json.JSONDecodeError,
-    ) as e:
+        )
 
         print(
-            f"[WARN] Hot reload failed: {e}"
+            f"[online_retrain] "
+            f"Hot-reloaded model "
+            f"version {version}"
+        )
+
+    except Exception as e:
+
+        print(
+            f"[WARN] Hot reload failed: "
+            f"{e}"
         )
 
 
@@ -1728,44 +1829,51 @@ def maybe_hot_reload_model():
 # CLASSIFICATION
 # ============================================================
 
-def classify_packet(pkt):
+def classify_packet(
+    pkt
+):
+
+    # Check whether online retraining produced
+    # a new model before inference.
+    maybe_hot_reload_model()
 
     raw_features, meta = (
-        extract_features(pkt)
+        extract_features(
+            pkt
+        )
     )
 
     if raw_features is None:
+
         return
 
     # --------------------------------------------------------
-    # SCALE FEATURES
+    # SCALE
     # --------------------------------------------------------
 
     try:
 
-        scaled = (
-            scaler.transform(
-                raw_features.reshape(
-                    1,
-                    -1,
-                )
+        scaled = scaler.transform(
+            raw_features.reshape(
+                1,
+                -1
             )
-            .astype(
-                np.float32
-            )
+        ).astype(
+            np.float32
         )
 
     except Exception as e:
 
         print(
-            f"[WARN] Scaling failed: {e}"
+            f"[WARN] Scaling failed: "
+            f"{e}"
         )
 
         return
 
     x = torch.as_tensor(
         scaled,
-        dtype=torch.float32,
+        dtype=torch.float32
     )
 
     # --------------------------------------------------------
@@ -1776,31 +1884,33 @@ def classify_packet(pkt):
 
         with torch.no_grad():
 
-            logits = model(x)
+            logits = model(
+                x
+            )
 
-            probs = torch.softmax(
+            probabilities = torch.softmax(
                 logits,
-                dim=1,
+                dim=1
             )
 
             pred_class = int(
-                torch.argmax(
-                    probs,
-                    dim=1,
+                probabilities.argmax(
+                    dim=1
                 ).item()
             )
 
             confidence = float(
-                probs[
+                probabilities[
                     0,
-                    pred_class,
+                    pred_class
                 ].item()
             )
 
     except Exception as e:
 
         print(
-            f"[WARN] Model inference failed: {e}"
+            f"[WARN] Model inference failed: "
+            f"{e}"
         )
 
         return
@@ -1810,7 +1920,7 @@ def classify_packet(pkt):
     ]
 
     # --------------------------------------------------------
-    # INDEPENDENT PORT SCAN RULE
+    # RULE DETECTION
     # --------------------------------------------------------
 
     scan_detected = (
@@ -1818,15 +1928,15 @@ def classify_packet(pkt):
             meta["src"],
             meta["dst"],
             meta["dport"],
-            meta["proto"],
+            meta["proto"]
         )
     )
 
     incident_id = None
 
-    # ========================================================
+    # --------------------------------------------------------
     # PORT SCAN
-    # ========================================================
+    # --------------------------------------------------------
 
     if scan_detected:
 
@@ -1840,22 +1950,23 @@ def classify_packet(pkt):
                 "Probe",
                 max(
                     confidence,
-                    PROBE_CONFIDENCE_THRESHOLD,
+                    PROBE_CONFIDENCE_THRESHOLD
                 ),
                 x,
                 probe_class,
-                force=True,
+                force=True
             )
         )
 
-    # ========================================================
+    # --------------------------------------------------------
     # ML ATTACK
-    # ========================================================
+    # --------------------------------------------------------
 
     elif (
         pred_class != 0
         and
-        confidence >= ML_ATTACK_THRESHOLD
+        confidence >=
+        ML_ATTACK_THRESHOLD
     ):
 
         evidence_count = (
@@ -1863,15 +1974,14 @@ def classify_packet(pkt):
                 meta["src"],
                 meta["dst"],
                 label,
-                confidence,
+                confidence
             )
         )
 
-        # Do NOT call it a confirmed incident
-        # from one packet alone.
         if (
             evidence_count
-            >= ML_CONFIRMATIONS_REQUIRED
+            >=
+            ML_CONFIRMATIONS_REQUIRED
         ):
 
             incident_id = (
@@ -1880,37 +1990,38 @@ def classify_packet(pkt):
                     label,
                     confidence,
                     x,
-                    pred_class,
+                    pred_class
                 )
             )
 
-    else:
+    # --------------------------------------------------------
+    # SUSPICIOUS
+    # --------------------------------------------------------
 
-        # A prediction below threshold is treated
-        # as suspicious/uncertain rather than
-        # immediately becoming an attack.
-        if (
-            pred_class != 0
-            and
-            confidence >= 0.70
-        ):
+    elif (
+        pred_class != 0
+        and
+        confidence >=
+        ML_SUSPICIOUS_THRESHOLD
+    ):
 
-            print(
-                f"[SUSPICIOUS] "
-                f"{meta['src']} -> "
-                f"{meta['dst']} => "
-                f"{label} "
-                f"({confidence:.2%})"
-            )
+        print(
+            f"[SUSPICIOUS] "
+            f"{meta['src']} -> "
+            f"{meta['dst']} => "
+            f"{label} "
+            f"({confidence:.2%})"
+        )
 
-    # ========================================================
-    # FINAL TAG
-    # ========================================================
+    # --------------------------------------------------------
+    # TAG
+    # --------------------------------------------------------
 
     confirmed_ml_attack = (
         pred_class != 0
         and
-        confidence >= ML_ATTACK_THRESHOLD
+        confidence >=
+        ML_ATTACK_THRESHOLD
         and
         incident_id is not None
     )
@@ -1926,7 +2037,8 @@ def classify_packet(pkt):
     elif (
         pred_class != 0
         and
-        confidence >= 0.70
+        confidence >=
+        ML_SUSPICIOUS_THRESHOLD
     ):
 
         tag = "SUSPICIOUS"
@@ -1934,10 +2046,6 @@ def classify_packet(pkt):
     else:
 
         tag = "normal"
-
-    # ========================================================
-    # DATABASE ENTRY
-    # ========================================================
 
     timestamp = datetime.now(
         timezone.utc
@@ -1966,7 +2074,7 @@ def classify_packet(pkt):
         "confidence":
             round(
                 confidence,
-                3,
+                4
             ),
 
         "tag":
@@ -1987,19 +2095,21 @@ def classify_packet(pkt):
         "flow_duration":
             round(
                 meta["flow_duration"],
-                3,
+                3
             ),
 
         "unique_ports":
-            meta["unique_ports"],
+            meta["unique_ports"]
     }
+
+    # --------------------------------------------------------
+    # DATABASE
+    # --------------------------------------------------------
 
     try:
 
-        row_id = (
-            db_insert_detection(
-                entry
-            )
+        row_id = db_insert_detection(
+            entry
         )
 
     except Exception as e:
@@ -2007,16 +2117,17 @@ def classify_packet(pkt):
         row_id = None
 
         print(
-            f"[WARN] Database insert failed: {e}"
+            f"[WARN] Database insert failed: "
+            f"{e}"
         )
 
     log.append(
         entry
     )
 
-    # ========================================================
+    # --------------------------------------------------------
     # PORT SCAN RESPONSE
-    # ========================================================
+    # --------------------------------------------------------
 
     if scan_detected:
 
@@ -2024,33 +2135,24 @@ def classify_packet(pkt):
             f"\nPORT SCAN DETECTED: "
             f"{meta['src']} -> "
             f"{meta['dst']} "
-            f"("
-            f"{SCAN_PORT_THRESHOLD}+ "
-            f"ports/"
-            f"{SCAN_WINDOW_SECONDS}s"
-            f")"
+            f"({SCAN_PORT_THRESHOLD}+ ports/"
+            f"{SCAN_WINDOW_SECONDS}s)"
         )
-
-        # Only the independent rule-based
-        # port scan can automatically trigger
-        # firewall blocking.
 
         if block_ip(
             meta["src"]
         ):
 
-            if row_id is not None:
-
-                mark_blocked(
-                    row_id
-                )
+            mark_blocked(
+                row_id
+            )
 
             print(
                 f"AUTO-BLOCKED: "
                 f"{meta['src']}"
             )
 
-        # Store rule-confirmed Probe sample.
+        # Store the scaled feature vector.
         try:
 
             log_retrain_sample(
@@ -2058,19 +2160,15 @@ def classify_packet(pkt):
                 CLASS_NAMES.index(
                     "Probe"
                 ),
-                "rule_confirmed_probe",
+                "rule_confirmed_probe"
             )
 
         except Exception as e:
 
             print(
-                f"[WARN] Could not store "
-                f"Probe retraining sample: {e}"
+                f"[WARN] Retraining sample failed: "
+                f"{e}"
             )
-
-    # ========================================================
-    # CONSOLE OUTPUT
-    # ========================================================
 
     elif confirmed_ml_attack:
 
@@ -2086,7 +2184,8 @@ def classify_packet(pkt):
     elif (
         pred_class != 0
         and
-        confidence >= 0.70
+        confidence >=
+        ML_SUSPICIOUS_THRESHOLD
     ):
 
         print(
@@ -2106,9 +2205,9 @@ def classify_packet(pkt):
             f"({confidence:.2%})"
         )
 
-    # ========================================================
-    # JSON SNAPSHOT
-    # ========================================================
+    # --------------------------------------------------------
+    # LOG SNAPSHOT
+    # --------------------------------------------------------
 
     if len(log) % 5 == 0:
 
@@ -2117,29 +2216,27 @@ def classify_packet(pkt):
             with open(
                 LIVE_LOG_PATH,
                 "w",
-                encoding="utf-8",
+                encoding="utf-8"
             ) as f:
 
                 json.dump(
                     log[-200:],
                     f,
-                    indent=2,
+                    indent=2
                 )
 
         except OSError as e:
 
             print(
-                f"[WARN] Could not write "
-                f"live log: {e}"
+                f"[WARN] Live log failed: "
+                f"{e}"
             )
 
-    # ========================================================
-    # RETRAINING / HOT RELOAD
-    # ========================================================
+    # --------------------------------------------------------
+    # RETRAIN CHECK
+    # --------------------------------------------------------
 
     if len(log) % 25 == 0:
-
-        maybe_hot_reload_model()
 
         maybe_trigger_retrain()
 
@@ -2153,7 +2250,7 @@ print(
 )
 
 print(
-    "          FedShield Live Capture Started"
+    "             FedShield Live Capture"
 )
 
 print(
@@ -2161,9 +2258,25 @@ print(
 )
 
 print(
-    f"Port scan detection: "
-    f"{SCAN_PORT_THRESHOLD}+ distinct TCP ports "
-    f"in {SCAN_WINDOW_SECONDS}s"
+    "Model: federated_noniid_model.pth"
+)
+
+print(
+    "Model architecture: MultiClassIDS"
+)
+
+print(
+    "Classes: Normal / DoS / Probe / R2L / U2R"
+)
+
+print(
+    "Feature pipeline: 41 NSL-KDD-compatible features"
+)
+
+print(
+    f"Port scan: "
+    f"{SCAN_PORT_THRESHOLD}+ TCP ports in "
+    f"{SCAN_WINDOW_SECONDS}s"
 )
 
 print(
@@ -2173,28 +2286,20 @@ print(
 
 print(
     f"ML confirmation: "
-    f"{ML_CONFIRMATIONS_REQUIRED} high-confidence "
-    f"events within {ML_CONFIRMATION_WINDOW}s"
+    f"{ML_CONFIRMATIONS_REQUIRED} events/"
+    f"{ML_CONFIRMATION_WINDOW}s"
 )
 
 print(
-    "Auto-block: ENABLED for confirmed port scans only"
+    "Auto-block: confirmed port scans only"
 )
 
 print(
-    "ML predictions: LOG + EXPLAIN, no direct firewall block"
+    "SHAP: enabled when available"
 )
 
 print(
-    "SHAP: ENABLED when background data is available"
-)
-
-print(
-    "Online retraining: ENABLED"
-)
-
-print(
-    "Hot model reload: ENABLED"
+    "Online retraining: enabled"
 )
 
 print(
@@ -2202,16 +2307,12 @@ print(
 )
 
 
-# ============================================================
-# PACKET CAPTURE
-# ============================================================
-
 try:
 
     sniff(
         prn=classify_packet,
         store=False,
-        count=0,
+        count=0
     )
 
 except KeyboardInterrupt:
@@ -2223,7 +2324,8 @@ except KeyboardInterrupt:
 except Exception as e:
 
     print(
-        f"\n[ERROR] Packet capture failed: {e}"
+        f"\n[ERROR] Packet capture failed: "
+        f"{e}"
     )
 
 finally:
@@ -2233,24 +2335,28 @@ finally:
         with open(
             LIVE_LOG_PATH,
             "w",
-            encoding="utf-8",
+            encoding="utf-8"
         ) as f:
 
             json.dump(
                 log[-200:],
                 f,
-                indent=2,
+                indent=2
             )
 
     except OSError as e:
 
         print(
-            f"[WARN] Final log write failed: {e}"
+            f"[WARN] Final log write failed: "
+            f"{e}"
         )
 
     print(
         f"\nSession packets: "
-        f"{len(log)} | "
+        f"{len(log)}"
+    )
+
+    print(
         f"Blocked IPs: "
         f"{len(blocked_ips)}"
     )

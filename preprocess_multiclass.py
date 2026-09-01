@@ -5,11 +5,12 @@ import numpy as np
 import pandas as pd
 
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import (
-    LabelEncoder,
-    StandardScaler
-)
+from sklearn.preprocessing import LabelEncoder, StandardScaler
 
+
+# ============================================================
+# PATHS
+# ============================================================
 
 BASE_DIR = os.path.dirname(
     os.path.abspath(__file__)
@@ -26,10 +27,19 @@ MODELS_DIR = os.path.join(
 )
 
 os.makedirs(
+    DATA_DIR,
+    exist_ok=True
+)
+
+os.makedirs(
     MODELS_DIR,
     exist_ok=True
 )
 
+
+# ============================================================
+# NSL-KDD COLUMNS
+# ============================================================
 
 COLUMNS = [
     "duration",
@@ -78,10 +88,16 @@ COLUMNS = [
 ]
 
 
+# ============================================================
+# ATTACK → CLASS MAPPING
+# ============================================================
+
 ATTACK_MAP = {
 
+    # Normal
     "normal": 0,
 
+    # DoS
     "neptune": 1,
     "back": 1,
     "teardrop": 1,
@@ -91,12 +107,14 @@ ATTACK_MAP = {
     "mailbomb": 1,
     "apache2": 1,
 
+    # Probe
     "satan": 2,
     "ipsweep": 2,
     "portsweep": 2,
     "nmap": 2,
     "mscan": 2,
 
+    # R2L
     "warezclient": 3,
     "warezmaster": 3,
     "imap": 3,
@@ -107,6 +125,7 @@ ATTACK_MAP = {
     "spy": 3,
     "sendmail": 3,
 
+    # U2R
     "buffer_overflow": 4,
     "rootkit": 4,
     "loadmodule": 4,
@@ -124,9 +143,67 @@ CLASS_NAMES = [
 ]
 
 
-def load_multiclass(
-    path
+CATEGORICAL_COLUMNS = [
+    "protocol_type",
+    "service",
+    "flag"
+]
+
+
+# ============================================================
+# UNKNOWN CATEGORY HANDLING
+# ============================================================
+
+def fit_label_encoder(values):
+
+    encoder = LabelEncoder()
+
+    values = (
+        pd.Series(values)
+        .astype(str)
+        .str.strip()
+    )
+
+    encoder.fit(values)
+
+    return encoder
+
+
+def transform_with_unknown(
+    encoder,
+    values
 ):
+
+    classes = set(
+        encoder.classes_
+    )
+
+    values = (
+        pd.Series(values)
+        .astype(str)
+        .str.strip()
+    )
+
+    # LabelEncoder cannot handle unseen categories.
+    # Use the first known category as fallback.
+    fallback = encoder.classes_[0]
+
+    values = values.map(
+        lambda value:
+        value if value in classes
+        else fallback
+    )
+
+    return encoder.transform(
+        values
+    )
+
+
+# ============================================================
+# LOAD DATA
+# ============================================================
+
+def load_multiclass(path):
 
     df = pd.read_csv(
         path,
@@ -134,38 +211,16 @@ def load_multiclass(
         names=COLUMNS
     )
 
-    df.drop(
-        columns=["difficulty"],
-        inplace=True
-    )
-
-
-    categorical_columns = [
-        "protocol_type",
-        "service",
-        "flag"
-    ]
-
-    encoders = {}
-
-    for column in categorical_columns:
-
-        encoder = LabelEncoder()
-
-        df[column] = encoder.fit_transform(
-            df[column].astype(str)
-        )
-
-        encoders[column] = encoder
-
-
-    labels = (
+    df["label"] = (
         df["label"]
         .astype(str)
         .str.strip()
-        .map(ATTACK_MAP)
+        .str.lower()
     )
 
+    labels = df["label"].map(
+        ATTACK_MAP
+    )
 
     valid = labels.notna()
 
@@ -173,58 +228,107 @@ def load_multiclass(
         valid
     ].copy()
 
-    df["label"] = (
-        labels.loc[valid]
-        .astype(int)
+    labels = labels.loc[
+        valid
+    ].astype(int)
+
+    df.drop(
+        columns=[
+            "label",
+            "difficulty"
+        ],
+        inplace=True
     )
 
+    # --------------------------------------------------------
+    # Split FIRST.
+    # Encoders and scaler are fitted only on training data.
+    # --------------------------------------------------------
 
-    print(
-        "Class distribution:"
+    X_raw = df.copy()
+
+    (
+        X_train_df,
+        X_test_df,
+        y_train,
+        y_test
+    ) = train_test_split(
+        X_raw,
+        labels.values,
+        test_size=0.20,
+        random_state=42,
+        stratify=labels.values
     )
 
-    for index, name in enumerate(
-        CLASS_NAMES
-    ):
+    # --------------------------------------------------------
+    # CATEGORICAL ENCODING
+    # --------------------------------------------------------
 
-        count = int(
-            (df["label"] == index)
-            .sum()
+    encoders = {}
+
+    for column in CATEGORICAL_COLUMNS:
+
+        encoder = fit_label_encoder(
+            X_train_df[column]
         )
 
-        print(
-            f"  {name}: {count}"
+        X_train_df.loc[
+            :,
+            column
+        ] = transform_with_unknown(
+            encoder,
+            X_train_df[column]
         )
 
-
-    X = df.drop(
-        columns=["label"]
-    ).values
-
-    y = df["label"].values
-
-
-    X_train, X_test, y_train, y_test = (
-        train_test_split(
-            X,
-            y,
-            test_size=0.20,
-            random_state=42,
-            stratify=y
+        X_test_df.loc[
+            :,
+            column
+        ] = transform_with_unknown(
+            encoder,
+            X_test_df[column]
         )
+
+        encoders[column] = encoder
+
+    # --------------------------------------------------------
+    # NUMERIC CONVERSION
+    # --------------------------------------------------------
+
+    X_train = X_train_df.values.astype(
+        np.float32
     )
 
+    X_test = X_test_df.values.astype(
+        np.float32
+    )
+
+    y_train = np.asarray(
+        y_train,
+        dtype=np.int64
+    )
+
+    y_test = np.asarray(
+        y_test,
+        dtype=np.int64
+    )
+
+    # --------------------------------------------------------
+    # STANDARD SCALING
+    # --------------------------------------------------------
 
     scaler = StandardScaler()
 
     X_train = scaler.fit_transform(
         X_train
+    ).astype(
+        np.float32
     )
 
     X_test = scaler.transform(
         X_test
+    ).astype(
+        np.float32
     )
-
 
     return (
         X_train,
@@ -236,6 +340,38 @@ def load_multiclass(
     )
 
 
+# ============================================================
+# DISTRIBUTION
+# ============================================================
+
+def print_distribution(
+    y,
+    title
+):
+
+    print(
+        f"\n{title}"
+    )
+
+    for index, name in enumerate(
+        CLASS_NAMES
+    ):
+
+        count = int(
+            np.sum(
+                y == index
+            )
+        )
+
+        print(
+            f"  {name}: {count}"
+        )
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
 if __name__ == "__main__":
 
     input_path = os.path.join(
@@ -243,8 +379,24 @@ if __name__ == "__main__":
         "KDDTrain+.txt"
     )
 
+    if not os.path.exists(
+        input_path
+    ):
+
+        raise FileNotFoundError(
+            f"Dataset not found:\n{input_path}"
+        )
+
     print(
-        "===== NSL-KDD MULTI-CLASS PREPROCESSING ====="
+        "============================================================"
+    )
+
+    print(
+        "FedShield — NSL-KDD Multi-Class Preprocessing"
+    )
+
+    print(
+        "============================================================"
     )
 
     (
@@ -258,6 +410,19 @@ if __name__ == "__main__":
         input_path
     )
 
+    print_distribution(
+        y_train,
+        "Training class distribution:"
+    )
+
+    print_distribution(
+        y_test,
+        "Test class distribution:"
+    )
+
+    # --------------------------------------------------------
+    # SAVE ARRAYS
+    # --------------------------------------------------------
 
     np.save(
         os.path.join(
@@ -291,6 +456,9 @@ if __name__ == "__main__":
         y_test
     )
 
+    # --------------------------------------------------------
+    # SAVE PREPROCESSORS
+    # --------------------------------------------------------
 
     joblib.dump(
         scaler,
@@ -308,9 +476,8 @@ if __name__ == "__main__":
         )
     )
 
-
     print(
-        "\nSaved multi-class dataset:"
+        "\nSaved:"
     )
 
     print(
@@ -335,4 +502,9 @@ if __name__ == "__main__":
 
     print(
         "  models/encoders_multiclass.pkl"
+    )
+
+    print(
+        f"\nFeature count: "
+        f"{X_train.shape[1]}"
     )
