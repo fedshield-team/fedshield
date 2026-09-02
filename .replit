@@ -2,6 +2,7 @@ modules = ["python-3.12", "nodejs-20", "web"]
 
 [nix]
 channel = "stable-25_05"
+packages = ["arrow-cpp", "c-ares", "cairo", "cargo", "dos2unix", "ffmpeg-full", "freetype", "ghostscript", "glibcLocales", "gmp", "gobject-introspection", "grpc", "gtk3", "imagemagickBig", "lcms2", "libcxx", "libiconv", "libimagequant", "libjpeg", "libtiff", "libwebp", "libxcrypt", "libyaml", "llvm", "openjpeg", "openssl", "pkg-config", "qhull", "rustc", "sox", "tcl", "tcpdump", "tk", "wireshark", "xsimd", "zlib"]
 
 [agent]
 expertMode = true

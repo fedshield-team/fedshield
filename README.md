@@ -55,7 +55,7 @@ The system doesn't stay static after deployment:
 - An **F1 regression guard** evaluates each retrained model against a held-out set before accepting it — a retrain is only promoted to production if it doesn't regress performance. In testing, this correctly accepted a genuine improvement (F1 0.8449 → 0.8691) while being able to reject a retrain that made things worse.
 
 ### 4. Explainable, Auditable Dashboard
-Real-time Streamlit dashboard with Prometheus metrics, JWT-authenticated API access, and a SQLite audit trail of every incident and retraining event.
+Real-time React dashboard with Prometheus metrics, JWT-authenticated API access, and a SQLite audit trail of every incident and retraining event.
 
 ---
 
@@ -108,7 +108,7 @@ python preprocess.py
 docker-compose up --build
 ```
 
-Dashboard available at: **http://localhost:8501**
+React dashboard available at: **http://localhost:3000**
 API available at: **http://localhost:8000**
 
 ### Run locally
@@ -121,7 +121,8 @@ python preprocess.py
 python train_baseline.py
 python federated_train.py
 python explain.py
-streamlit run dashboard/app.py
+# Build the existing React dashboard from web/ (or use Docker Compose)
+cd web && npm ci && npm run build
 ```
 
 ### Run real Flower FL (4 terminals)
@@ -156,7 +157,7 @@ python server/lambda_aggregator.py
 | Orchestration | Docker Compose | Multi-node local deployment |
 | API | FastAPI | Incident reports, retraining, model serving |
 | CI/CD | GitHub Actions | Automated testing |
-| Dashboard | Streamlit + Plotly | Real-time visualization |
+| Dashboard | React + Recharts | Real-time visualization |
 | Dataset | NSL-KDD / CICIDS2017 | 125,973 network traffic samples |
 
 ---
@@ -179,8 +180,9 @@ fedshield/
 ├── api/                           # FastAPI backend
 │   ├── main.py
 │   └── incident_reports_endpoints.py
-├── dashboard/                     # Streamlit UI
-│   └── app.py
+├── web/                            # Active React dashboard
+│   ├── src/
+│   └── nginx.conf
 ├── model.py                       # IntrusionDetector neural net
 ├── preprocess.py                  # Data preprocessing
 ├── train_baseline.py              # Centralized baseline

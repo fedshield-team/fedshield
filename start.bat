@@ -29,7 +29,7 @@ echo   FedShield is running!
 echo.
 echo   Web Dashboard : http://localhost:3000
 echo   API           : http://localhost:8000
-echo   Streamlit     : http://localhost:8501
+echo   React dashboard: http://localhost:3000
 echo  ============================================
 echo.
 echo  To start live capture (Admin terminal):

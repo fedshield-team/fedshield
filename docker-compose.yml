@@ -116,7 +116,7 @@ services:
   # ─────────────────────────────────────────────────────────────
   # React/Vite Frontend
   #
-  # This replaces the old Streamlit dashboard.
+  # The existing React dashboard is the only active frontend.
   # Nginx serves the compiled React application and proxies
   # /api and /auth requests to FastAPI.
   # ─────────────────────────────────────────────────────────────
