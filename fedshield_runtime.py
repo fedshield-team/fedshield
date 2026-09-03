@@ -18,7 +18,13 @@ import numpy as np
 import shap
 import torch
 
-from model import MultiClassIDS
+from model import (
+    MULTICLASS_CLASS_NAMES,
+    MULTICLASS_FEATURE_NAMES,
+    MULTICLASS_INPUT_DIM,
+    MULTICLASS_NUM_CLASSES,
+    MultiClassIDS,
+)
 
 
 BASE = Path(__file__).resolve().parent
@@ -28,22 +34,8 @@ ENCODERS_PATH = BASE / "models" / "encoders_multiclass.pkl"
 VERSION_PATH = BASE / "models" / "model_version.json"
 TRAIN_BG_PATH = BASE / "data" / "X_train_mc.npy"
 
-CLASS_NAMES = ["Normal", "DoS", "Probe", "R2L", "U2R"]
-FEATURE_NAMES = [
-    "duration", "protocol_type", "service", "flag", "src_bytes",
-    "dst_bytes", "land", "wrong_fragment", "urgent", "hot",
-    "num_failed_logins", "logged_in", "num_compromised", "root_shell",
-    "su_attempted", "num_root", "num_file_creations", "num_shells",
-    "num_access_files", "num_outbound_cmds", "is_host_login",
-    "is_guest_login", "count", "srv_count", "serror_rate",
-    "srv_serror_rate", "rerror_rate", "srv_rerror_rate", "same_srv_rate",
-    "diff_srv_rate", "srv_diff_host_rate", "dst_host_count",
-    "dst_host_srv_count", "dst_host_same_srv_rate",
-    "dst_host_diff_srv_rate", "dst_host_same_src_port_rate",
-    "dst_host_srv_diff_host_rate", "dst_host_serror_rate",
-    "dst_host_srv_serror_rate", "dst_host_rerror_rate",
-    "dst_host_srv_rerror_rate",
-]
+CLASS_NAMES = MULTICLASS_CLASS_NAMES
+FEATURE_NAMES = MULTICLASS_FEATURE_NAMES
 
 
 class FedShieldRuntime:
@@ -81,7 +73,10 @@ class FedShieldRuntime:
                         "Missing FedShield runtime artifacts: " + ", ".join(missing)
                     )
 
-                model = MultiClassIDS(input_dim=41, num_classes=5)
+                model = MultiClassIDS(
+                    input_dim=MULTICLASS_INPUT_DIM,
+                    num_classes=MULTICLASS_NUM_CLASSES,
+                )
                 state = torch.load(
                     MODEL_PATH,
                     map_location="cpu",
@@ -195,7 +190,7 @@ class FedShieldRuntime:
                     return []
 
             class_values = np.asarray(class_values).reshape(-1)
-            if len(class_values) != len(FEATURE_NAMES):
+            if len(class_values) != MULTICLASS_INPUT_DIM:
                 return []
             indices = np.argsort(np.abs(class_values))[::-1][:top_n]
             return [
@@ -217,7 +212,7 @@ class FedShieldRuntime:
                 "model_exists": MODEL_PATH.exists(),
                 "scaler_exists": SCALER_PATH.exists(),
                 "encoders_exists": ENCODERS_PATH.exists(),
-                "feature_count": 41,
+                "feature_count": MULTICLASS_INPUT_DIM,
                 "classes": CLASS_NAMES,
                 "model_version": self.model_version,
                 "shap_available": self.explainer is not None

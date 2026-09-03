@@ -1,0 +1,1 @@
+- [Python dependency installation](package-install.md) — the project package helper may scan optional desktop imports; use targeted runtime dependencies when that blocks setup.

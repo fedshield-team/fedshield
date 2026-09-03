@@ -1,0 +1,693 @@
+PHASE 1 — UNIFY THE FEDERATED LEARNING BACKEND
+
+We have completed the full audit. Now make the first controlled modification.
+
+DO NOT modify the React dashboard/UI in this phase.
+
+Do not change:
+
+React layout
+styling
+colors
+navigation
+charts
+globe
+particle effects
+SOC Monitor design
+Overview design
+Training design
+SHAP design
+
+Do not introduce Streamlit.
+
+Do not create mock data, fake predictions, fake models, or placeholder metrics.
+
+Goal
+
+The project currently has two different federated-learning implementations:
+
+Active multiclass path:
+MultiClassIDS → 5 classes → 41 features → multiclass preprocessing → federated_noniid_model.pth
+Legacy Flower path:
+IntrusionDetector → binary classification → legacy binary artifacts
+
+This must be corrected so the federated deployment path and the active API/inference path use the same authoritative multiclass model contract.
+
+Required authoritative contract
+
+Use:
+
+MultiClassIDS
+5 classes
+41 features
+preprocess_multiclass.py
+the saved multiclass scaler
+the saved multiclass categorical encoders
+the active multiclass model artifact
+the same feature order
+
+The model architecture must come from the shared model.py implementation rather than being duplicated in multiple files.
+
+Flower
+
+Inspect:
+
+nodes/flower_client.py
+server/flower_server.py
+server/aggregator.py
+
+Update the Flower client/server so that, if Flower remains part of the deployed architecture, it trains/aggregates the same five-class MultiClassIDS model and uses the same artifact/preprocessing contract as the active runtime.
+
+Do not simply rename variables or make superficial changes.
+
+Verify:
+
+model input dimension = 41
+output dimension = 5
+client model architecture matches server model architecture
+client weights can be loaded into the global model
+aggregation is compatible with the model state
+evaluation uses the multiclass labels
+saved global model can subsequently be loaded by fedshield_runtime.py
+
+If there is legacy binary Flower code that is no longer required, do not delete it blindly. Clearly separate/deprecate it so it cannot accidentally be used as the production/active path.
+
+Important
+
+Do not change the existing React dashboard.
+
+Do not change the visual experiment values yet.
+
+Do not modify the live capture pipeline yet.
+
+Do not modify deployment configuration yet.
+
+Do not modify .gitignore yet.
+
+Those will be handled in later phases.
+
+Testing
+
+After making the changes, actually test:
+
+Python compilation.
+Import of the Flower client/server.
+Construction of the five-class MultiClassIDS.
+Model state/weight compatibility between client and server.
+A small safe local federated round using the existing real data/artifacts if feasible.
+Loading the resulting global model through fedshield_runtime.py.
+Confirm that the resulting model has 41 input features and 5 output classes.
+
+Do not retrain the entire large dataset unnecessarily just to prove the integration.
+
+Before finishing
+
+Show me:
+
+exactly which files were changed
+what was changed in each file
+how the Flower path now connects to the authoritative multiclass model
+test results
+any remaining issues
+
+Do not make any other unrelated changes.
+
+PHASE 2 — FIX FEDSHIELD API LIFECYCLE AND RUNTIME OBSERVABILITY
+
+Phase 1 is complete and accepted.
+
+Make Phase 2 only. Do not make unrelated changes.
+
+DO NOT MODIFY
+
+Do not modify:
+
+React dashboard/UI
+web/src/pages/*
+React styling/layout/navigation/charts/globe/particles
+live_capture.py
+Docker/deployment configuration
+.gitignore
+Git configuration
+federated-learning implementation from Phase 1 unless absolutely required for API compatibility
+
+Do not introduce Streamlit.
+
+Do not create mock data, fake predictions, fake metrics, fake model outputs, or placeholders.
+
+GOAL
+
+Improve the FastAPI/runtime architecture so that:
+
+API liveness does NOT depend on successfully loading the ML model.
+ML readiness is reported separately from basic API health.
+Runtime/model loading failures are visible through structured status and server logs instead of silently becoming empty/zero dashboard responses.
+Existing real inference behavior remains unchanged when the required artifacts are available.
+INSPECT FIRST
+
+Inspect:
+
+api/main.py
+fedshield_runtime.py
+API routes used by the React dashboard
+authentication initialization
+model/scaler/encoder loading
+existing error handling
+
+Do not modify files until you understand the current lifecycle.
+
+REQUIRED CHANGES
+
+Refactor startup so importing/starting FastAPI does not unnecessarily fail simply because the ML runtime or an optional dependency/artifact is unavailable.
+
+Implement a clear separation between:
+
+Liveness
+
+API process is running.
+Must not require model loading.
+
+Readiness
+
+API can perform real ML inference.
+Verify required model, scaler, categorical encoders and other mandatory runtime artifacts.
+Report the actual reason if readiness is false.
+
+Use structured JSON responses for health/readiness status.
+
+Do not expose secrets, API keys, passwords, JWT secrets, or sensitive filesystem information in health responses.
+
+API ERROR HANDLING
+
+Inspect the existing endpoints such as:
+
+/api/stats
+/api/feed
+/api/breakdown
+/api/timeline
+/api/blocked
+/api/shap
+/api/drift
+
+Do NOT change their response purpose or redesign the frontend.
+
+Where an internal failure currently gets converted into an empty list, zero, or misleading success response, change the backend behavior so the failure is observable and distinguishable from genuine zero/empty data.
+
+Preserve compatibility with the existing frontend response shapes wherever possible.
+
+Add appropriate server-side logging with useful error information.
+
+Do not log passwords, JWT secrets, API keys, tokens, or other sensitive values.
+
+MODEL RUNTIME
+
+Keep the Phase 1 authoritative model contract:
+
+MultiClassIDS
+→ 41 input features
+→ 5 output classes
+→ existing multiclass preprocessing
+→ existing multiclass scaler
+→ existing categorical encoders
+→ models/federated_noniid_model.pth
+
+Do not introduce another model architecture.
+
+If runtime loading is already version-aware and CPU-safe, preserve that behavior.
+
+AUTHENTICATION
+
+Inspect the current JWT/password initialization.
+
+Ensure production credentials continue to come from environment variables/secrets.
+
+Do not add hardcoded passwords or fallback production secrets.
+
+Do not print credentials in logs.
+
+TESTING
+
+Add or update focused backend tests for:
+
+FastAPI liveness works without requiring ML readiness.
+Readiness correctly reports missing/unavailable ML artifacts.
+Readiness succeeds when the real required artifacts are available.
+A real multiclass runtime still validates 41 input features and 5 classes.
+API failures are observable rather than silently converted to misleading zero/empty success states.
+Authentication does not expose secrets.
+
+Run whatever tests are possible in the current environment.
+
+If dependencies are unavailable, clearly report which tests could not execute. Do not fake successful test results.
+
+IMPORTANT
+
+Do not redesign the React dashboard to consume new response formats in this phase.
+
+Keep frontend compatibility as much as reasonably possible.
+
+Do not modify live packet capture.
+
+Do not modify Docker/deployment configuration.
+
+Do not modify .gitignore.
+
+At the end, report:
+
+Files changed.
+Exact API lifecycle changes.
+How liveness differs from readiness.
+Which silent error cases were fixed.
+Tests actually executed and their results.
+Tests that could not execute and why.
+Any remaining API/runtime issues.
+
+Do not make changes outside Phase 2.
+
+PHASE 3 — DEFINE AND IMPLEMENT A REPRODUCIBLE ML ARTIFACT STRATEGY
+
+Phase 1 and Phase 2 are complete and accepted.
+
+Now perform Phase 3 only.
+
+Do not make unrelated changes.
+
+DO NOT MODIFY
+
+Do not modify:
+
+React dashboard/UI
+web/src/pages/*
+React styling/layout/navigation/charts/globe/particles
+live_capture.py
+Flower implementation from Phase 1
+FastAPI lifecycle/readiness implementation from Phase 2 unless an artifact-path compatibility fix is absolutely necessary
+Dockerfile
+docker-compose.yml
+.dockerignore
+.gitignore
+Git configuration
+Streamlit/dashboard implementation
+
+Do not create mock models, fake metrics, fake predictions, placeholder artifacts, or synthetic production artifacts.
+
+GOAL
+
+Establish a clear, reproducible artifact contract so that a fresh deployment can obtain the real ML artifacts required by FedShield inference.
+
+The authoritative ML contract remains:
+
+MultiClassIDS
+→ 41 input features
+→ 5 classes
+→ multiclass categorical encoders
+→ multiclass scaler
+→ models/federated_noniid_model.pth
+
+STEP 1 — AUDIT THE REAL ARTIFACTS
+
+Inspect the existing project and identify every artifact required by:
+
+fedshield_runtime.py
+multiclass preprocessing
+real inference
+SHAP
+online retraining
+federated training
+
+Separate them into:
+
+Required runtime artifacts
+Training-only artifacts
+Generated runtime artifacts
+Datasets
+Optional artifacts
+
+Do not assume a file is required merely because it exists. Trace actual code references.
+
+STEP 2 — DOCUMENT THE ARTIFACT CONTRACT
+
+Create/update a small machine-readable artifact manifest if appropriate, for example:
+
+models/artifact_manifest.json
+
+It must describe the actual required artifacts, their purpose, expected dimensions/classes where applicable, and version/checksum information where feasible.
+
+Do not put secrets into the manifest.
+
+Do not invent checksums or metadata. Calculate them from the real files.
+
+STEP 3 — VERIFY THE REAL MODEL
+
+Verify the existing active model artifact:
+
+models/federated_noniid_model.pth
+
+against the authoritative MultiClassIDS architecture.
+
+Verify:
+
+41 input features
+5 output classes
+compatible state-dict keys/shapes
+loadability by fedshield_runtime.py
+CPU-safe loading
+
+Do not retrain the full dataset.
+
+Do not replace the existing model with a newly generated fake or placeholder model.
+
+STEP 4 — VERIFY PREPROCESSING ARTIFACTS
+
+Verify the real multiclass:
+
+scaler
+categorical encoders
+feature order
+
+are compatible with the 41-feature runtime contract.
+
+If the project already stores feature order explicitly, reuse it.
+
+Do not create a second incompatible preprocessing pipeline.
+
+STEP 5 — REPRODUCIBILITY
+
+Determine the safest strategy for deployment:
+
+tracked release artifacts
+versioned artifact bundle
+external artifact download
+reproducible generation
+
+Choose based on the actual current project and explain the reasoning.
+
+Do not make major Docker/deployment changes in this phase.
+
+If an artifact is currently ignored by .gitignore, do not modify .gitignore yet. Instead report that as a remaining integration step.
+
+If the current repository cannot reproduce a working runtime from a fresh clone because required artifacts are missing, explicitly document that blocker.
+
+STEP 6 — VALIDATION
+
+Run whatever validation is possible:
+
+artifact existence checks
+checksum generation
+model state-dict compatibility
+scaler/encoder validation
+41-feature validation
+5-class validation
+runtime artifact loading
+
+Use the actual project dependencies if available.
+
+Do not claim a test passed if it was not actually executed.
+
+If dependencies are unavailable, clearly state which tests could not run.
+
+IMPORTANT
+
+This phase is about ML artifact reproducibility only.
+
+Do not redesign anything.
+
+Do not change the React dashboard.
+
+Do not change live packet capture.
+
+Do not change Docker/Compose yet.
+
+Do not change .gitignore yet.
+
+Do not change Git configuration.
+
+Do not retrain the complete model.
+
+At the end, report:
+
+Files changed.
+Complete list of real runtime artifacts.
+Training-only artifacts.
+Generated/runtime artifacts.
+Dataset dependencies.
+Artifact manifest/checksum results.
+Whether federated_noniid_model.pth is loadable by the authoritative runtime.
+Tests actually executed and results.
+Tests that could not execute and why.
+Remaining deployment/artifact blockers.
+
+Do not make changes outside Phase 3.
+
+PHASE 4 — MAKE DEPLOYMENT REPRODUCIBLE AND ARTIFACT-SAFE
+
+Phase 1, Phase 2, and Phase 3 are complete and accepted.
+
+Now perform PHASE 4 ONLY.
+
+The goal is to make the existing FedShield project deployable from a clean checkout while preserving the existing application architecture and real ML artifacts.
+
+Do not make unrelated changes.
+
+DO NOT MODIFY
+
+Do not modify:
+
+React dashboard UI or design
+web/src/pages/*
+React styling, layout, navigation, charts, globe, particles, or visual effects
+live_capture.py
+Flower implementation from Phase 1
+fedshield_runtime.py or API behavior from Phase 2 unless an artifact/deployment path absolutely requires a minimal compatibility change
+SHAP logic
+online retraining logic
+threat-intelligence logic
+database schema
+Streamlit dashboard
+
+Do not create mock/fake models, predictions, metrics, datasets, or artifacts.
+
+Do not retrain the full model.
+
+STEP 1 — INSPECT BEFORE MODIFYING
+
+Inspect:
+
+Dockerfile
+docker-compose.yml
+.dockerignore
+.gitignore
+.env.example
+.replit
+README.md
+models/artifact_manifest.json
+actual files under models/
+actual files under data/
+Python dependency files
+frontend dependency/build configuration
+
+Determine exactly what is required for:
+
+API startup
+ML inference
+SHAP
+federated training
+database/runtime operation
+React production build
+
+Do not assume that every existing file needs to be deployed.
+
+STEP 2 — AUTHORITATIVE RUNTIME ARTIFACTS
+
+Preserve the Phase 3 artifact contract:
+
+MultiClassIDS
+41 input features
+5 output classes
+scaler_multiclass.pkl
+encoders_multiclass.pkl
+federated_noniid_model.pth
+
+The existing real model must remain the authoritative inference model.
+
+Do not replace it.
+
+Do not generate a new model merely to make deployment pass.
+
+STEP 3 — FIX ARTIFACT PACKAGING
+
+The current project ignores important ML artifacts and Docker configuration may exclude files required by the runtime.
+
+Determine the safest production strategy for the existing project.
+
+The strategy must ensure that a fresh deployment can obtain the real inference artifacts.
+
+Prefer a clear versioned artifact-bundle approach if appropriate.
+
+If model binaries should not be committed directly to Git, document the exact mechanism by which deployment obtains the versioned artifacts.
+
+If they should be committed for this project size, explain why and update Git ignore rules carefully.
+
+Never delete the only copy of a real model or dataset.
+
+Before changing .gitignore, inspect whether any affected files are currently tracked.
+
+Do not accidentally re-add:
+
+node_modules
+__pycache__
+runtime databases
+logs
+temporary files
+generated caches
+STEP 4 — DOCKER ARTIFACT AVAILABILITY
+
+Make the minimum required changes so the deployment environment can access the real runtime artifacts.
+
+Resolve the current conflict where .dockerignore excludes files required by the ML runtime.
+
+Do not blindly copy the entire data/ directory into the production image if only runtime artifacts are required.
+
+Runtime deployment should not unnecessarily contain the full training dataset.
+
+Clearly separate:
+
+Production runtime artifacts
+
+from
+
+Training datasets/artifacts
+
+STEP 5 — SECRETS
+
+Inspect .env.example and deployment configuration.
+
+Ensure production secrets are supplied through environment variables/secrets.
+
+Required secrets currently include:
+
+JWT_SECRET_KEY
+FEDSHIELD_PASSWORD
+ANALYST_PASSWORD
+
+Optional integrations may include:
+
+GROQ_API_KEY
+ABUSEIPDB_API_KEY
+
+Do not place actual secret values anywhere in:
+
+source code
+Dockerfile
+docker-compose.yml
+.env.example
+README
+artifact manifest
+Git
+
+.env.example should contain names/documentation only.
+
+Do not make production authentication work through fallback hardcoded credentials.
+
+STEP 6 — PORTS AND STARTUP
+
+Inspect the existing Replit, Docker, FastAPI, and frontend configuration.
+
+Identify any inconsistent ports or startup commands.
+
+Establish one clear production API startup contract.
+
+Do not redesign the application.
+
+If React is built separately from FastAPI, document the relationship clearly.
+
+Do not change the frontend UI.
+
+STEP 7 — LIVE CAPTURE BOUNDARY
+
+Do NOT modify live_capture.py.
+
+Do not attempt to make cloud/Replit packet capture work through hacks.
+
+If deployment configuration currently assumes that live packet capture automatically works inside the cloud container, document this as an environment/architecture limitation rather than pretending it is solved.
+
+The cloud API must remain deployable even when packet capture is unavailable.
+
+STEP 8 — DATABASE / PERSISTENCE
+
+Inspect the current SQLite usage.
+
+Do not redesign the database in this phase.
+
+Determine whether deployment currently depends on a local SQLite file.
+
+If persistence cannot be guaranteed by the current deployment configuration, document it clearly rather than creating a fake solution.
+
+Do not commit generated production database contents.
+
+STEP 9 — README / DEPLOYMENT DOCUMENTATION
+
+Update README.md only as necessary to accurately document:
+
+required environment variables
+required runtime artifacts
+how artifacts are obtained
+production startup command
+frontend build relationship
+cloud packet-capture limitation
+database persistence limitation if applicable
+
+Remove statements that claim deployment capabilities that are not actually implemented.
+
+Do not rewrite the README unnecessarily.
+
+STEP 10 — VALIDATION
+
+Run all feasible validation.
+
+At minimum attempt:
+
+Dockerfile/config syntax validation
+artifact presence checks
+.dockerignore/.gitignore sanity checks
+production frontend build if dependencies are available
+Python compilation
+API startup/configuration validation
+real model artifact availability
+artifact manifest verification
+
+If Docker is unavailable, do not claim Docker validation passed.
+
+If dependencies are unavailable, explicitly report that.
+
+Never fabricate successful tests.
+
+CRITICAL SAFETY RULE
+
+Before making any change to .gitignore, Docker configuration, or artifact handling:
+
+do not delete or overwrite any real project file.
+
+Preserve the existing working project and all real ML artifacts.
+
+If there is uncertainty about whether an artifact should be tracked, leave the artifact untouched and report the decision required.
+
+FINAL REPORT
+
+At the end, report:
+
+Every file changed.
+Exact .gitignore changes, if any.
+Exact .dockerignore changes, if any.
+Exact Docker/deployment changes, if any.
+Runtime artifacts included/available for deployment.
+Training artifacts intentionally excluded from production.
+Secret handling.
+Startup/port contract.
+Database persistence limitations.
+Live-capture limitations.
+Tests actually executed and their results.
+Tests that could not execute and why.
+Remaining deployment blockers.
+
+Do not make changes outside Phase 4.
