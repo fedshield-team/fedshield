@@ -162,6 +162,9 @@ export const api = {
   feed: (limit = 50) =>
     get(`/api/feed?limit=${limit}`),
 
+  incidentReport: incidentId =>
+    get(`/incidents/${encodeURIComponent(incidentId)}/report`),
+
   breakdown: () =>
     get('/api/breakdown'),
 

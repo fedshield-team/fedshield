@@ -174,6 +174,34 @@ export default function SOCMonitor() {
   const [blocked,   setBlocked]   = useState([])
   const [loaded,    setLoaded]    = useState(false)
   const [errors,    setErrors]    = useState([])
+  const [report,    setReport]    = useState(null)
+  const [reportError, setReportError] = useState(null)
+  const [reportLoading, setReportLoading] = useState(false)
+
+  const viewReport = async (incidentId) => {
+    setReport(null)
+    setReportError(null)
+    setReportLoading(true)
+    try {
+      const data = await api.incidentReport(incidentId)
+      setReport({ ...data, incident_id: incidentId })
+    } catch (error) {
+      setReportError(error.message || 'Incident report unavailable')
+    } finally {
+      setReportLoading(false)
+    }
+  }
+
+  const downloadReport = () => {
+    if (!report?.report_text) return
+    const blob = new Blob([report.report_text], { type: 'text/plain' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `fedshield-incident-${report.incident_id}.txt`
+    link.click()
+    URL.revokeObjectURL(url)
+  }
 
   const fetchAll = async () => {
     const requests = await Promise.allSettled([
@@ -400,6 +428,15 @@ export default function SOCMonitor() {
                       </td>
                       <td style={TD}>
                         {row.blocked ? <span style={{ color:'#ff9500', fontSize:'0.75rem' }}>🛡️ BLOCKED</span> : null}
+                        {row.incident_id && (
+                          <button
+                            type="button"
+                            onClick={() => viewReport(row.incident_id)}
+                            style={{ marginLeft:'0.6rem', padding:'0.3rem 0.55rem', borderRadius:6, border:'1px solid rgba(0,245,255,0.3)', background:'rgba(0,245,255,0.08)', color:'#00f5ff', fontSize:'0.7rem', cursor:'pointer' }}
+                          >
+                            View Report
+                          </button>
+                        )}
                       </td>
                     </motion.tr>
                   )
@@ -418,6 +455,48 @@ export default function SOCMonitor() {
           )}
         </div>
       </motion.div>
+
+      {(reportLoading || reportError || report) && (
+        <motion.div
+          initial={{ opacity:0 }} animate={{ opacity:1 }}
+          style={{ ...CARD, padding:'1.3rem', marginTop:'1.5rem', border:'1px solid rgba(0,245,255,0.2)' }}
+        >
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'1rem' }}>
+            <div style={{ fontSize:'0.68rem', letterSpacing:'0.1em', color:'var(--muted)' }}>INCIDENT REPORT</div>
+            <button
+              type="button"
+              onClick={() => { setReport(null); setReportError(null) }}
+              style={{ padding:'0.3rem 0.55rem', borderRadius:6, border:'1px solid rgba(255,255,255,0.15)', background:'transparent', color:'var(--muted)', fontSize:'0.7rem', cursor:'pointer' }}
+            >
+              Close
+            </button>
+          </div>
+          {reportLoading && (
+            <div style={{ color:'var(--muted)', fontFamily:'var(--font-mono)', fontSize:'0.8rem' }}>Loading incident report...</div>
+          )}
+          {reportError && !reportLoading && (
+            <div style={{ color:'#ff9500', fontFamily:'var(--font-mono)', fontSize:'0.8rem' }}>{reportError}</div>
+          )}
+          {report && !reportLoading && !reportError && (
+            <>
+              <div style={{ display:'flex', gap:'1rem', flexWrap:'wrap', marginBottom:'1rem', color:'var(--muted)', fontSize:'0.75rem', fontFamily:'var(--font-mono)' }}>
+                <span>Incident: {report.incident_id}</span>
+                {report.predicted_class && <span>Class: {report.predicted_class}</span>}
+                {typeof report.confidence === 'number' && <span>Confidence: {(report.confidence * 100).toFixed(1)}%</span>}
+                {report.created_at && <span>Created: {report.created_at}</span>}
+              </div>
+              <div style={{ whiteSpace:'pre-wrap', color:'var(--text)', lineHeight:1.6, fontSize:'0.85rem', marginBottom:'1rem' }}>{report.report_text}</div>
+              <button
+                type="button"
+                onClick={downloadReport}
+                style={{ padding:'0.4rem 0.7rem', borderRadius:6, border:'1px solid rgba(0,255,136,0.3)', background:'rgba(0,255,136,0.08)', color:'#00ff88', fontSize:'0.72rem', cursor:'pointer' }}
+              >
+                Download Report
+              </button>
+            </>
+          )}
+        </motion.div>
+      )}
     </motion.div>
   )
 }

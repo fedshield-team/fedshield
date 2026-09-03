@@ -694,7 +694,8 @@ def feed(
                 prediction,
                 confidence,
                 tag,
-                blocked
+                blocked,
+                incident_id
             FROM detections
             ORDER BY id DESC
             LIMIT ?
