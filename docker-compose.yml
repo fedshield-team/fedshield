@@ -6,7 +6,7 @@ services:
   server:
     build: .
     container_name: fedshield_server
-    command: python server/flower_server.py
+    command: python -m server.flower_server
     ports:
       - "8080:8080"
     env_file:
@@ -34,7 +34,7 @@ services:
   node1:
     build: .
     container_name: fedshield_node1
-    command: python nodes/flower_client.py 1
+    command: python -m nodes.flower_client 1
     environment:
       SERVER_ADDRESS: server:8080
     depends_on:
@@ -53,7 +53,7 @@ services:
   node2:
     build: .
     container_name: fedshield_node2
-    command: python nodes/flower_client.py 2
+    command: python -m nodes.flower_client 2
     environment:
       SERVER_ADDRESS: server:8080
     depends_on:
@@ -72,7 +72,7 @@ services:
   node3:
     build: .
     container_name: fedshield_node3
-    command: python nodes/flower_client.py 3
+    command: python -m nodes.flower_client 3
     environment:
       SERVER_ADDRESS: server:8080
     depends_on:
