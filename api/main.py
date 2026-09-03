@@ -4,6 +4,7 @@ FedShield API - FastAPI backend with JWT Authentication + Prometheus Metrics
 
 import sqlite3
 import json
+import hashlib
 import ipaddress
 import logging
 import os
@@ -804,12 +805,23 @@ def timeline(
             """
             SELECT
                 timestamp,
-                tag,
-                COUNT(*) AS count
-            FROM detections
-            GROUP BY timestamp, tag
-            ORDER BY rowid DESC
-            LIMIT 120
+                prediction,
+                confidence,
+                incident_id,
+                1 AS count
+            FROM (
+                SELECT
+                    id,
+                    timestamp,
+                    prediction,
+                    confidence,
+                    incident_id
+                FROM detections
+                WHERE tag='ATTACK'
+                ORDER BY id DESC
+                LIMIT 120
+            )
+            ORDER BY id ASC
             """
         ).fetchall()
 
@@ -925,6 +937,27 @@ def training(
 
     if errors:
         result["errors"] = errors
+
+    evaluation_path = os.path.join(
+        BASE, "models", "federated_noniid_evaluation.json"
+    )
+    active_model_path = os.path.join(
+        BASE, "models", "federated_noniid_model.pth"
+    )
+    version_path = os.path.join(BASE, "models", "model_version.json")
+    try:
+        with open(version_path, encoding="utf-8") as file:
+            active_version = json.load(file).get("version")
+        with open(active_model_path, "rb") as file:
+            active_sha256 = hashlib.sha256(file.read()).hexdigest()
+        result["active_noniid_model"] = {
+            "model_version": active_version,
+            "sha256": active_sha256,
+        }
+        with open(evaluation_path, encoding="utf-8") as file:
+            result["noniid_evaluation"] = json.load(file)
+    except (OSError, ValueError, TypeError, KeyError):
+        result["noniid_evaluation"] = None
 
     return result
 

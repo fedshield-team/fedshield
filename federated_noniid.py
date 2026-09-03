@@ -1,6 +1,8 @@
 import argparse
+import hashlib
 import json
 import os
+from datetime import datetime, timezone
 
 import numpy as np
 import torch
@@ -141,6 +143,16 @@ else:
         MODELS_DIR,
         "federated_noniid_history.json"
     )
+
+
+OUT_EVALUATION = os.path.join(
+    MODELS_DIR,
+    "federated_noniid_evaluation.json"
+)
+VERSION_PATH = os.path.join(
+    MODELS_DIR,
+    "model_version.json"
+)
 
 
 # ============================================================
@@ -745,6 +757,14 @@ print(
     "\n===== FINAL REPORT ====="
 )
 
+final_report = classification_report(
+    y_test,
+    predictions,
+    target_names=CLASS_NAMES,
+    zero_division=0,
+    output_dict=True,
+)
+
 print(
     classification_report(
         y_test,
@@ -763,6 +783,46 @@ torch.save(
     global_model.state_dict(),
     OUT_MODEL
 )
+
+with open(OUT_MODEL, "rb") as file:
+    model_sha256 = hashlib.sha256(file.read()).hexdigest()
+
+try:
+    with open(VERSION_PATH, encoding="utf-8") as file:
+        model_version = json.load(file).get("version")
+except (OSError, ValueError, TypeError):
+    model_version = None
+
+evaluation = {
+    "model": "federated_noniid_model",
+    "model_version": model_version,
+    "model_sha256": model_sha256,
+    "class_order": CLASS_NAMES,
+    "test_data": {
+        "path": os.path.relpath(X_TEST_PATH, BASE_DIR),
+        "shape": list(X_test.shape),
+        "labels_path": os.path.relpath(Y_TEST_PATH, BASE_DIR),
+        "labels_shape": list(y_test.shape),
+    },
+    "generated_at": datetime.now(timezone.utc).isoformat(),
+    "per_class": {
+        name: {
+            "precision": float(final_report[name]["precision"]),
+            "recall": float(final_report[name]["recall"]),
+            "f1": float(final_report[name]["f1-score"]),
+            "support": int(final_report[name]["support"]),
+        }
+        for name in CLASS_NAMES
+    },
+    "aggregate": {
+        "accuracy": float(final_report["accuracy"]),
+        "macro_avg": final_report["macro avg"],
+        "weighted_avg": final_report["weighted avg"],
+    },
+}
+
+with open(OUT_EVALUATION, "w", encoding="utf-8") as file:
+    json.dump(evaluation, file, indent=2)
 
 
 with open(
@@ -784,4 +844,8 @@ print(
 
 print(
     f"History saved to:\n{OUT_HISTORY}"
+)
+
+print(
+    f"Evaluation saved to:\n{OUT_EVALUATION}"
 )

@@ -116,6 +116,8 @@ React dashboard available at: **http://localhost:3000**
 The API is available through the dashboard proxy at **http://localhost:3000**. The Compose API service is internal and is not published directly to the host.
 Compose persists SQLite state and runtime model data through the mounted `./models` volume. A standalone container needs its own persistent volume if SQLite state must survive replacement. Live packet capture is disabled by default for container/cloud deployment; enable `FEDSHIELD_START_CAPTURE=1` only for an appropriate edge/host deployment.
 
+The same Compose setup mounts the real `./data` directory into API, Flower server, and Flower clients. It must contain the preprocessed multiclass arrays (`X_train_mc.npy`, `y_train_mc.npy`, `X_test_mc.npy`, and `y_test_mc.npy`) for SHAP, online retraining, federated training, and evaluation; these generated datasets are intentionally not added to Git. Deploy web/API separately from edge capture: capture requires packet access on the sensor host, and the existing Windows `netsh` firewall action must run on that host rather than in a Linux container.
+
 ### Run locally
 ```bash
 python -m venv venv

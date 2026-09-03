@@ -236,9 +236,27 @@ export default function SOCMonitor() {
   }, [])
 
   const atkTimeline = timeline
-    .filter(r => r.tag === 'ATTACK')
-    .slice(0, 60).reverse()
-    .map(r => ({ time: r.timestamp, v: r.count }))
+    .slice(-60)
+    .map(r => ({
+      time: r.timestamp,
+      v: r.count,
+      prediction: r.prediction,
+      confidence: r.confidence,
+      incident_id: r.incident_id,
+    }))
+
+  const TimelineTooltip = ({ active, payload }) => {
+    if (!active || !payload?.length) return null
+    const event = payload[0].payload
+    return (
+      <div style={{ background:'#050510', border:'1px solid #222', borderRadius:8, padding:'0.6rem 0.8rem', color:'#f5f5f5', fontSize:'0.78rem' }}>
+        <div>{event.prediction}</div>
+        <div style={{ color:'var(--muted)', marginTop:4 }}>{event.time}</div>
+        {typeof event.confidence === 'number' && <div>Confidence: {(event.confidence * 100).toFixed(1)}%</div>}
+        {event.incident_id && <div style={{ marginTop:4, color:'#a78bff' }}>Incident: {event.incident_id}</div>}
+      </div>
+    )
+  }
 
   const dataStatus = !loaded ? 'LOADING' : errors.length ? 'DATA UNAVAILABLE' : 'LIVE DATA'
   const statValue = key => stats ? stats[key]?.toLocaleString() : '—'
@@ -329,7 +347,7 @@ export default function SOCMonitor() {
                 cx="50%" cy="50%" innerRadius={65} outerRadius={95} paddingAngle={4}>
                 {breakdown.map((e,i) => <Cell key={i} fill={COLORS[e.prediction]||'#888'} strokeWidth={0} />)}
               </Pie>
-              <Tooltip contentStyle={{ background:'#050510', border:'1px solid #222', borderRadius:8, fontSize:'0.8rem' }} />
+              <Tooltip contentStyle={{ background:'#050510', border:'1px solid #222', borderRadius:8, fontSize:'0.8rem', color:'#f5f5f5' }} itemStyle={{ color:'#f5f5f5' }} labelStyle={{ color:'#f5f5f5' }} />
             </PieChart>
           </ResponsiveContainer>
           <div style={{ display:'flex', flexWrap:'wrap', gap:'0.5rem', marginTop:'0.5rem' }}>
@@ -360,7 +378,7 @@ export default function SOCMonitor() {
               </defs>
               <XAxis dataKey="time" tick={false} axisLine={false} tickLine={false} />
               <YAxis tick={{ fill:'#444', fontSize:11 }} axisLine={false} tickLine={false} />
-              <Tooltip contentStyle={{ background:'#050510', border:'1px solid #222', borderRadius:8, fontSize:'0.8rem' }} />
+              <Tooltip content={<TimelineTooltip />} />
               <Area type="monotone" dataKey="v" stroke="#ff2d55" fill="url(#ag2)" strokeWidth={2.5} />
             </AreaChart>
           </ResponsiveContainer>

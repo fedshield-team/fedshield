@@ -56,6 +56,13 @@ export default function Training() {
   const multiIid = latest(data.iid, 'macro_f1')
   const multiNoniid = latest(data.noniid, 'macro_f1')
   const formatMetric = value => typeof value === 'number' ? value.toFixed(4) : 'unavailable'
+  const evaluation = data.noniid_evaluation
+  const activeModel = data.active_noniid_model
+  const evaluationMatchesActiveModel = Boolean(
+    evaluation && activeModel &&
+    evaluation.model_version === activeModel.model_version &&
+    evaluation.model_sha256 === activeModel.sha256
+  )
   const comparison = (value, baseline, label) => {
     if (value === null || baseline === null) return 'Comparison unavailable — required artifact is missing'
     const delta = value - baseline
@@ -160,11 +167,24 @@ export default function Training() {
                   </tr>
                 </thead>
                 <tbody>
-                  <tr>
-                    <td colSpan={5} style={{ padding: '1.2rem 0.8rem', color: '#ff9500', fontFamily: 'var(--font-mono)', fontSize: '0.78rem' }}>
-                      Per-class precision, recall, F1, and support are unavailable: no per-class evaluation artifact is stored.
-                    </td>
-                  </tr>
+                  {evaluationMatchesActiveModel ? evaluation.class_order.map(name => {
+                    const metric = evaluation.per_class?.[name]
+                    return (
+                      <tr key={name}>
+                        <td style={{ padding: '0.65rem 0.8rem' }}>{name}</td>
+                        <td style={{ padding: '0.65rem 0.8rem' }}>{formatMetric(metric?.precision)}</td>
+                        <td style={{ padding: '0.65rem 0.8rem' }}>{formatMetric(metric?.recall)}</td>
+                        <td style={{ padding: '0.65rem 0.8rem' }}>{formatMetric(metric?.f1)}</td>
+                        <td style={{ padding: '0.65rem 0.8rem' }}>{typeof metric?.support === 'number' ? metric.support.toLocaleString() : 'unavailable'}</td>
+                      </tr>
+                    )
+                  }) : (
+                    <tr>
+                      <td colSpan={5} style={{ padding: '1.2rem 0.8rem', color: '#ff9500', fontFamily: 'var(--font-mono)', fontSize: '0.78rem' }}>
+                        Per-class precision, recall, F1, and support are unavailable: no matching per-class evaluation artifact is stored.
+                      </td>
+                    </tr>
+                  )}
                 </tbody>
               </table>
             </div>

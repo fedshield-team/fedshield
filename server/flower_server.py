@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import json
 import os
+import hashlib
+import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Tuple
 
@@ -21,6 +24,7 @@ from model import (
 BASE = Path(__file__).resolve().parents[1]
 MODELS_DIR = BASE / "models"
 MODEL_PATH = MODELS_DIR / "federated_noniid_model.pth"
+VERSION_PATH = MODELS_DIR / "model_version.json"
 MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
 round_metrics = []
@@ -64,7 +68,32 @@ def save_authoritative_model(
         for parameter, array in zip(model.parameters(), parameters)
     ]
     model.set_weights(weights)
-    torch.save(model.state_dict(), model_path)
+    fd, temporary_path = tempfile.mkstemp(
+        prefix=".model_",
+        suffix=".pth",
+        dir=model_path.parent,
+    )
+    os.close(fd)
+    try:
+        torch.save(model.state_dict(), temporary_path)
+        with open(temporary_path, "rb") as file:
+            model_sha256 = hashlib.sha256(file.read()).hexdigest()
+        os.replace(temporary_path, model_path)
+    except Exception:
+        if os.path.exists(temporary_path):
+            os.unlink(temporary_path)
+        raise
+
+    version = int(datetime.now(timezone.utc).timestamp() * 1_000_000)
+    with VERSION_PATH.open("w", encoding="utf-8") as file:
+        json.dump(
+            {
+                "version": version,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "sha256": model_sha256,
+            },
+            file,
+        )
 
 
 class MulticlassFedAvg(fl.server.strategy.FedAvg):
