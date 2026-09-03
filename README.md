@@ -103,13 +103,18 @@ Real-time React dashboard with Prometheus metrics, JWT-authenticated API access,
 ```bash
 git clone https://github.com/fedshield-team/fedshield.git
 cd fedshield
+copy .env.example .env  # PowerShell: Copy-Item .env.example .env
+# Set the required values in .env privately before starting Compose.
 python download_data.py
 python preprocess_multiclass.py
 docker-compose up --build
 ```
 
+Compose requires `JWT_SECRET_KEY`, `FEDSHIELD_PASSWORD`, and `ANALYST_PASSWORD`. `FEDSHIELD_USERNAME` and `ANALYST_USERNAME` may use the documented defaults; Groq and AbuseIPDB keys are required only for their corresponding integrations. Keep all secrets private and do not commit `.env`.
+
 React dashboard available at: **http://localhost:3000**
 The API is available through the dashboard proxy at **http://localhost:3000**. The Compose API service is internal and is not published directly to the host.
+Compose persists SQLite state and runtime model data through the mounted `./models` volume. A standalone container needs its own persistent volume if SQLite state must survive replacement. Live packet capture is disabled by default for container/cloud deployment; enable `FEDSHIELD_START_CAPTURE=1` only for an appropriate edge/host deployment.
 
 ### Run locally
 ```bash
@@ -150,7 +155,7 @@ python server/lambda_aggregator.py
 
 | Layer | Technology | Purpose |
 |-------|-----------|---------|
-| ML | PyTorch 2.12 CPU | MultiClassIDS neural network training and inference |
+| ML | PyTorch CPU wheel | MultiClassIDS neural network training and inference |
 | FL | Flower (flwr) | Federated learning coordination |
 | XAI | SHAP | Explainable AI / per-packet feature attribution |
 | LLM | Groq | Natural-language incident report generation |

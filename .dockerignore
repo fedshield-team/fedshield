@@ -1,7 +1,9 @@
 venv/
 .venv/
 __pycache__/
+**/__pycache__/
 *.pyc
+*.pyo
 .git/
 .github/
 data/
@@ -9,7 +11,17 @@ models/*.db
 models/*.pth
 !models/federated_noniid_model.pth
 models/*.pt
+models/*.db-*
 *.csv
 node_modules/
+models/*.sqlite*
+models/live_log.json
+models/drift_log.json
+models/threat_intel_cache.json
 .pytest_cache/
 .env
+web/node_modules/
+web/dist/
+web/.vite/
+web/.cache/
+dist/

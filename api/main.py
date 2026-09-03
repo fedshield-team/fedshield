@@ -355,7 +355,7 @@ def initialize_runtime():
 
     init_incident_reports_table()
     init_retrain_buffer()
-    if os.getenv("FEDSHIELD_START_CAPTURE", "1").lower() not in {
+    if os.getenv("FEDSHIELD_START_CAPTURE", "0").lower() not in {
         "0", "false", "no"
     }:
         start_live_capture()
