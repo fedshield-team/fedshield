@@ -137,32 +137,6 @@ function AttackGlobe() {
       })))
     }
 
-    const BURST = 300
-    const bPos = new Float32Array(BURST * 3)
-    const bVel = new Float32Array(BURST * 3)
-    const bGeo = new THREE.BufferGeometry()
-    bGeo.setAttribute('position', new THREE.BufferAttribute(bPos, 3))
-    const bMesh = new THREE.Points(bGeo, new THREE.PointsMaterial({
-      size: 0.08, color: 0xff2d55, transparent: true, opacity: 0,
-      blending: THREE.AdditiveBlending, depthWrite: false
-    }))
-    scene.add(bMesh)
-
-    let bActive = false, bTimer = 0
-    const triggerBurst = () => {
-      const origin = nodeObjs[Math.floor(Math.random() * 3)].pos
-      for (let i = 0; i < BURST; i++) {
-        bPos[i*3]=origin.x; bPos[i*3+1]=origin.y; bPos[i*3+2]=origin.z
-        const s = 0.03 + Math.random() * 0.08
-        const t = Math.random()*Math.PI*2, p = Math.random()*Math.PI
-        bVel[i*3]=Math.sin(p)*Math.cos(t)*s; bVel[i*3+1]=Math.sin(p)*Math.sin(t)*s; bVel[i*3+2]=Math.cos(p)*s
-      }
-      bActive = true; bTimer = 0
-      bGeo.attributes.position.needsUpdate = true
-    }
-    const burstInt = setInterval(triggerBurst, 4000)
-    setTimeout(triggerBurst, 600)
-
     let frame
     const clock = new THREE.Clock()
     const animate = () => {
@@ -175,26 +149,12 @@ function AttackGlobe() {
         n.ring.material.opacity = 0.8 - s * 0.35
         n.glow.material.opacity = 0.15 + Math.sin(t * 1.5 + n.phase) * 0.1
       })
-      if (bActive) {
-        bTimer += 0.016
-        const alive = bTimer < 2
-        bMesh.material.opacity = alive ? Math.max(0, 0.9 - bTimer / 2) : 0
-        if (alive) {
-          const bp = bGeo.attributes.position.array
-          for (let i = 0; i < BURST; i++) {
-            bp[i*3]+=bVel[i*3]; bp[i*3+1]+=bVel[i*3+1]; bp[i*3+2]+=bVel[i*3+2]
-            bVel[i*3]*=0.96; bVel[i*3+1]*=0.96; bVel[i*3+2]*=0.96
-          }
-          bGeo.attributes.position.needsUpdate = true
-        } else { bActive = false }
-      }
       renderer.render(scene, camera)
     }
     animate()
 
     return () => {
       cancelAnimationFrame(frame)
-      clearInterval(burstInt)
       if (el.contains(renderer.domElement)) el.removeChild(renderer.domElement)
       renderer.dispose()
     }
@@ -207,23 +167,38 @@ const TH = { padding:'0.75rem 1rem', fontSize:'0.7rem', color:'var(--muted)', le
 const TD = { padding:'0.7rem 1rem', fontSize:'0.82rem', color:'var(--text)', verticalAlign:'middle', whiteSpace:'nowrap', borderBottom:'1px solid rgba(255,255,255,0.03)' }
 
 export default function SOCMonitor() {
-  const [stats,     setStats]     = useState({ total:0, attacks:0, blocked:0, normal:0 })
+  const [stats,     setStats]     = useState(null)
   const [feed,      setFeed]      = useState([])
   const [breakdown, setBreakdown] = useState([])
   const [timeline,  setTimeline]  = useState([])
   const [blocked,   setBlocked]   = useState([])
+  const [loaded,    setLoaded]    = useState(false)
+  const [errors,    setErrors]    = useState([])
 
   const fetchAll = async () => {
-    try {
-      const [s,f,b,t,bl] = await Promise.all([
-        api.stats(),
-        api.feed(40),
-        api.breakdown(),
-        api.timeline(),
-        api.blocked(),
-      ])
-      setStats(s); setFeed(f); setBreakdown(b); setTimeline(t); setBlocked(bl)
-    } catch(e) {}
+    const requests = await Promise.allSettled([
+      api.stats(),
+      api.feed(40),
+      api.breakdown(),
+      api.timeline(),
+      api.blocked(),
+    ])
+    const failures = []
+    const apply = (result, setter, label, fallback) => {
+      if (result.status === 'fulfilled') {
+        setter(result.value)
+      } else {
+        setter(fallback)
+        failures.push(`${label}: ${result.reason?.message || 'unavailable'}`)
+      }
+    }
+    apply(requests[0], setStats, 'Statistics', null)
+    apply(requests[1], setFeed, 'Packet feed', [])
+    apply(requests[2], setBreakdown, 'Breakdown', [])
+    apply(requests[3], setTimeline, 'Timeline', [])
+    apply(requests[4], setBlocked, 'Blocked IPs', [])
+    setErrors(failures)
+    setLoaded(true)
   }
 
   useEffect(() => {
@@ -236,6 +211,9 @@ export default function SOCMonitor() {
     .filter(r => r.tag === 'ATTACK')
     .slice(0, 60).reverse()
     .map(r => ({ time: r.timestamp, v: r.count }))
+
+  const dataStatus = !loaded ? 'LOADING' : errors.length ? 'DATA UNAVAILABLE' : 'LIVE DATA'
+  const statValue = key => stats ? stats[key]?.toLocaleString() : '—'
 
   return (
     <motion.div
@@ -252,16 +230,22 @@ export default function SOCMonitor() {
           WebkitBackgroundClip:'text', WebkitTextFillColor:'transparent'
         }}>Live SOC Monitor</h1>
         <div style={{ marginLeft:'auto', fontSize:'0.72rem', color:'var(--muted)', fontFamily:'var(--font-mono)' }}>
-          AUTO-REFRESH 3s
+          AUTO-REFRESH 3s · {dataStatus}
         </div>
       </div>
 
+      {errors.length > 0 && (
+        <div style={{ marginBottom:'1.5rem', padding:'0.8rem 1rem', borderRadius:8, background:'rgba(255,149,0,0.06)', border:'1px solid rgba(255,149,0,0.2)', color:'#ff9500', fontSize:'0.75rem', fontFamily:'var(--font-mono)' }}>
+          {errors.join(' · ')}
+        </div>
+      )}
+
       <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:'1rem', marginBottom:'1.5rem' }}>
         {[
-          { icon:Radio,         l:'PACKETS',  v:stats.total,   c:'#00f5ff' },
-          { icon:Activity,      l:'NORMAL',   v:stats.normal,  c:'#00ff88' },
-          { icon:AlertTriangle, l:'ATTACKS',  v:stats.attacks, c:'#ff2d55' },
-          { icon:Ban,           l:'BLOCKED',  v:stats.blocked, c:'#ff9500' },
+          { icon:Radio,         l:'PACKETS',  v:statValue('total'),   c:'#00f5ff' },
+          { icon:Activity,      l:'NORMAL',   v:statValue('normal'),  c:'#00ff88' },
+          { icon:AlertTriangle, l:'ATTACKS',  v:statValue('attacks'), c:'#ff2d55' },
+          { icon:Ban,           l:'BLOCKED',  v:statValue('blocked'), c:'#ff9500' },
         ].map(({icon:Icon,l,v,c},i) => (
           <motion.div key={i}
             initial={{ opacity:0, y:20 }} animate={{ opacity:1, y:0 }} transition={{ delay:0.1*i }}
@@ -290,10 +274,10 @@ export default function SOCMonitor() {
       >
         <div style={{ position:'absolute', top:'1rem', left:'1.4rem', zIndex:2 }}>
           <div style={{ fontSize:'0.68rem', color:'var(--muted)', letterSpacing:'0.12em', marginBottom:'0.5rem' }}>
-            FEDERATED NODES — LIVE
+             FEDERATED NODES — CONFIGURED
           </div>
           <div style={{ display:'flex', gap:'1.2rem' }}>
-            {[['#00f5ff','Hospital','Hyderabad'],['#7b2fff','Bank','Mumbai'],['#00ff88','Campus','Singapore']].map(([c,n,l],i)=>(
+             {[['#00f5ff','Hospital','Configured client'],['#7b2fff','Bank','Configured client'],['#00ff88','Campus','Configured client']].map(([c,n,l],i)=>(
               <div key={i} style={{ display:'flex', alignItems:'center', gap:'0.4rem' }}>
                 <div style={{ width:8, height:8, borderRadius:'50%', background:c, boxShadow:`0 0 8px ${c}` }} />
                 <div>
@@ -327,6 +311,11 @@ export default function SOCMonitor() {
                 {b.prediction} ({b.count?.toLocaleString()})
               </div>
             ))}
+             {loaded && breakdown.length === 0 && (
+               <div style={{ color: errors.some(e => e.startsWith('Breakdown:')) ? '#ff9500' : 'var(--muted)', fontSize:'0.75rem', fontFamily:'var(--font-mono)' }}>
+                 {errors.some(e => e.startsWith('Breakdown:')) ? 'Breakdown unavailable.' : 'No detections recorded.'}
+               </div>
+             )}
           </div>
         </motion.div>
 
@@ -350,7 +339,7 @@ export default function SOCMonitor() {
         </motion.div>
       </div>
 
-      {blocked.length > 0 && (
+       {(blocked.length > 0 || errors.some(e => e.startsWith('Blocked IPs:'))) && (
         <motion.div initial={{ opacity:0 }} animate={{ opacity:1 }} transition={{ delay:0.8 }}
           style={{ ...CARD, padding:'1.2rem 1.4rem', marginBottom:'1.5rem',
                    border:'1px solid rgba(255,149,0,0.3)', background:'rgba(255,149,0,0.04)' }}>
@@ -363,6 +352,9 @@ export default function SOCMonitor() {
                 {b.src} <span style={{ opacity:0.6 }}>({b.prediction})</span>
               </div>
             ))}
+           {errors.some(e => e.startsWith('Blocked IPs:')) && (
+             <div style={{ color:'#ff9500', fontSize:'0.75rem', fontFamily:'var(--font-mono)' }}>Blocked IP data unavailable.</div>
+           )}
           </div>
         </motion.div>
       )}
@@ -371,9 +363,10 @@ export default function SOCMonitor() {
         style={{ ...CARD }}>
         <div style={{ padding:'1rem 1.4rem', borderBottom:'1px solid rgba(255,255,255,0.06)',
                       display:'flex', justifyContent:'space-between', alignItems:'center' }}>
-          <div style={{ fontSize:'0.68rem', letterSpacing:'0.1em', color:'var(--muted)' }}>📡 LIVE PACKET FEED</div>
-          <motion.div animate={{ opacity:[1,0.3,1] }} transition={{ duration:1.5, repeat:Infinity }}
-            style={{ fontSize:'0.68rem', color:'#00ff88', fontFamily:'var(--font-mono)' }}>● LIVE</motion.div>
+           <div style={{ fontSize:'0.68rem', letterSpacing:'0.1em', color:'var(--muted)' }}>📡 PACKET FEED — BACKEND DATA</div>
+            <div style={{ fontSize:'0.68rem', color: errors.some(e => e.startsWith('Packet feed:')) ? '#ff9500' : '#00ff88', fontFamily:'var(--font-mono)' }}>
+             ● {errors.some(e => e.startsWith('Packet feed:')) ? 'UNAVAILABLE' : loaded ? 'BACKEND CONNECTED' : 'LOADING'}
+           </div>
         </div>
         <div style={{ overflowX:'auto' }}>
           <table style={{ width:'100%', borderCollapse:'collapse' }}>
@@ -416,7 +409,11 @@ export default function SOCMonitor() {
           </table>
           {feed.length === 0 && (
             <div style={{ padding:'3rem', textAlign:'center', color:'var(--muted)', fontFamily:'var(--font-mono)', fontSize:'0.85rem' }}>
-              Waiting for live_capture.py to start writing data...
+               {errors.some(e => e.startsWith('Packet feed:'))
+                 ? 'Packet feed unavailable.'
+                 : loaded
+                   ? 'No detections recorded. Waiting for live_capture.py to write data.'
+                   : 'Loading packet feed...'}
             </div>
           )}
         </div>

@@ -6,18 +6,31 @@ import { api } from '../api'
 export default function Training() {
   const [data, setData] = useState({})
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
 
   useEffect(() => {
     api.training()
-      .then(d => { setData(d); setLoading(false) })
-      .catch(() => setLoading(false))
+      .then(d => {
+        setData(d)
+        if (d.errors) setError('Some training history artifacts are unavailable.')
+        setLoading(false)
+      })
+      .catch(e => {
+        setError(e.message)
+        setLoading(false)
+      })
   }, [])
 
-  const binaryData = (data.federated || []).map(d => ({
-    round: d.round,
-    'Federated': parseFloat(d.f1?.toFixed(4)),
-    'Centralized': 0.9947,
-  }))
+  const binaryData = (() => {
+    const baseline = data.baseline || []
+    const federated = data.federated || []
+    const maxLen = Math.max(baseline.length, federated.length)
+    return Array.from({ length: maxLen }, (_, i) => ({
+      round: federated[i]?.round ?? baseline[i]?.epoch ?? i + 1,
+      Federated: federated[i]?.f1 ?? null,
+      Centralized: baseline[i]?.f1 ?? null,
+    }))
+  })()
 
   const multiData = (() => {
     const maxLen = Math.max(
@@ -27,11 +40,28 @@ export default function Training() {
     )
     return Array.from({ length: maxLen }, (_, i) => ({
       round: i + 1,
-      'Centralized':    data.multiclass?.[i]?.macro_f1?.toFixed(4) || null,
-      'IID Federated':  data.iid?.[i]?.macro_f1?.toFixed(4) || null,
-      'Non-IID (Best)': data.noniid?.[i]?.macro_f1?.toFixed(4) || null,
+      'Centralized':    data.multiclass?.[i]?.macro_f1 ?? null,
+      'IID Federated':  data.iid?.[i]?.macro_f1 ?? null,
+      'Non-IID (Best)': data.noniid?.[i]?.macro_f1 ?? null,
     }))
   })()
+
+  const latest = (history, key) => {
+    const row = Array.isArray(history) && history.length ? history[history.length - 1] : null
+    return typeof row?.[key] === 'number' ? row[key] : null
+  }
+  const binaryFederated = latest(data.federated, 'f1')
+  const binaryCentralized = latest(data.baseline, 'f1')
+  const multiCentralized = latest(data.multiclass, 'macro_f1')
+  const multiIid = latest(data.iid, 'macro_f1')
+  const multiNoniid = latest(data.noniid, 'macro_f1')
+  const formatMetric = value => typeof value === 'number' ? value.toFixed(4) : 'unavailable'
+  const comparison = (value, baseline, label) => {
+    if (value === null || baseline === null) return 'Comparison unavailable — required artifact is missing'
+    const delta = value - baseline
+    const relation = delta > 0 ? 'above' : delta < 0 ? 'below' : 'matches'
+    return `${formatMetric(value)} ${relation} ${label} (${Math.abs(delta).toFixed(4)} difference)`
+  }
 
   const CustomTooltip = ({ active, payload, label }) => {
     if (!active || !payload?.length) return null
@@ -65,6 +95,11 @@ export default function Training() {
         </div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+          {error && (
+            <div style={{ padding: '0.8rem 1rem', borderRadius: 8, background: 'rgba(255,149,0,0.06)', border: '1px solid rgba(255,149,0,0.2)', color: '#ff9500', fontSize: '0.8rem', fontFamily: 'var(--font-mono)' }}>
+              {error}
+            </div>
+          )}
           <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}
             style={{ padding: '1.4rem', borderRadius: 16, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', backdropFilter: 'blur(20px)' }}>
             <div style={{ fontSize: '0.72rem', letterSpacing: '0.1em', color: 'var(--muted)', marginBottom: '1.2rem' }}>
@@ -81,7 +116,9 @@ export default function Training() {
               </LineChart>
             </ResponsiveContainer>
             <div style={{ marginTop: '0.8rem', padding: '0.7rem 1rem', borderRadius: 8, background: 'rgba(0,245,255,0.05)', border: '1px solid rgba(0,245,255,0.1)', fontSize: '0.8rem', color: '#00f5ff' }}>
-              ✅ Federated F1: 0.9946 vs Centralized: 0.9947 — 0.0001 gap with full privacy preserved
+              {binaryFederated === null && binaryCentralized === null
+                ? 'Federated and centralized binary F1 are unavailable.'
+                : `Federated F1: ${formatMetric(binaryFederated)} vs Centralized: ${formatMetric(binaryCentralized)} — ${comparison(binaryFederated, binaryCentralized, 'centralized')}`}
             </div>
           </motion.div>
 
@@ -102,7 +139,9 @@ export default function Training() {
               </LineChart>
             </ResponsiveContainer>
             <div style={{ marginTop: '0.8rem', padding: '0.7rem 1rem', borderRadius: 8, background: 'rgba(0,255,136,0.05)', border: '1px solid rgba(0,255,136,0.1)', fontSize: '0.8rem', color: '#00ff88' }}>
-              🔥 Non-IID Federated (0.84) beats IID Federated (0.81) AND Centralized (0.79) — counterintuitive and the key finding
+              {multiNoniid === null
+                ? 'Non-IID federated result is unavailable.'
+                : `Non-IID Federated: ${formatMetric(multiNoniid)}; IID: ${formatMetric(multiIid)}; Centralized: ${formatMetric(multiCentralized)} — ${comparison(multiNoniid, multiCentralized, 'centralized')}`}
             </div>
           </motion.div>
 
@@ -121,35 +160,16 @@ export default function Training() {
                   </tr>
                 </thead>
                 <tbody>
-                  {[
-                    { Class: 'Normal', Precision: 0.98, Recall: 1.00, F1: 0.99, Support: 13469, color: '#00ff88' },
-                    { Class: 'DoS',    Precision: 1.00, Recall: 0.98, F1: 0.99, Support: 9186,  color: '#ff2d55' },
-                    { Class: 'Probe',  Precision: 0.99, Recall: 0.98, F1: 0.98, Support: 2331,  color: '#ff9500' },
-                    { Class: 'R2L',    Precision: 0.91, Recall: 0.40, F1: 0.56, Support: 199,   color: '#ff2d8f' },
-                    { Class: 'U2R',    Precision: 0.80, Recall: 0.40, F1: 0.53, Support: 10,    color: '#bf5af2' },
-                  ].map((r, i) => (
-                    <tr key={i} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-                      <td style={{ padding: '0.65rem 0.8rem' }}>
-                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                          <span style={{ width: 8, height: 8, borderRadius: 2, background: r.color, display: 'inline-block' }} />
-                          <span style={{ fontSize: '0.85rem', fontWeight: 600 }}>{r.Class}</span>
-                        </span>
-                      </td>
-                      {[r.Precision, r.Recall, r.F1].map((v, j) => (
-                        <td key={j} style={{ padding: '0.65rem 0.8rem', fontFamily: 'var(--font-mono)', fontSize: '0.82rem', color: v >= 0.9 ? '#00ff88' : v >= 0.7 ? '#ff9500' : '#ff2d55' }}>
-                          {v.toFixed(2)}
-                        </td>
-                      ))}
-                      <td style={{ padding: '0.65rem 0.8rem', fontFamily: 'var(--font-mono)', fontSize: '0.82rem', color: 'var(--muted)' }}>
-                        {r.Support.toLocaleString()}
-                      </td>
-                    </tr>
-                  ))}
+                  <tr>
+                    <td colSpan={5} style={{ padding: '1.2rem 0.8rem', color: '#ff9500', fontFamily: 'var(--font-mono)', fontSize: '0.78rem' }}>
+                      Per-class precision, recall, F1, and support are unavailable: no per-class evaluation artifact is stored.
+                    </td>
+                  </tr>
                 </tbody>
               </table>
             </div>
             <div style={{ marginTop: '0.8rem', fontSize: '0.75rem', color: 'var(--muted)' }}>
-              ℹ️ R2L/U2R recall low due to very few test samples (199 and 10) — documented limitation of NSL-KDD benchmark
+              ℹ️ Aggregate macro F1 is available from the training history; per-class evaluation is not reported by the available artifacts.
             </div>
           </motion.div>
         </div>

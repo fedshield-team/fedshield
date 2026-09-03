@@ -145,6 +145,16 @@ export const api = {
       return res.json()
     }),
 
+  // Public experiment summary used by the unauthenticated landing page.
+  publicSummary: () =>
+    fetch('/api/public-summary').then(async (res) => {
+      if (!res.ok) {
+        throw new Error(`Summary request failed: ${res.status}`)
+      }
+
+      return res.json()
+    }),
+
   // SOC
   stats: () =>
     get('/api/stats'),

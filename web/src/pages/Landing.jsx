@@ -1,12 +1,20 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import * as THREE from 'three'
 import { motion } from 'framer-motion'
 import { ArrowRight } from 'lucide-react'
+import { api } from '../api'
 
 export default function Landing() {
   const mountRef = useRef(null)
   const navigate = useNavigate()
+  const [summary, setSummary] = useState(null)
+
+  useEffect(() => {
+    api.publicSummary()
+      .then(setSummary)
+      .catch(() => setSummary({}))
+  }, [])
 
   useEffect(() => {
     const W = window.innerWidth, H = window.innerHeight
@@ -155,41 +163,6 @@ export default function Landing() {
       panels.push({ grid, fill, baseX: d.x, baseY: d.y, phase: Math.random() * Math.PI * 2 })
     })
 
-    // ── Burst particles (attack simulation) ──────────────────────────────
-    const burstCount = 400
-    const burstPos   = new Float32Array(burstCount * 3)
-    const burstVel   = new Float32Array(burstCount * 3)
-    const burstLife  = new Float32Array(burstCount)
-    let   burstActive = false, burstTimer = 0
-
-    const triggerBurst = (x, y, z) => {
-      for (let i = 0; i < burstCount; i++) {
-        burstPos[i*3]   = x; burstPos[i*3+1] = y; burstPos[i*3+2] = z
-        const speed = 0.08 + Math.random() * 0.18
-        const theta = Math.random() * Math.PI * 2
-        const phi   = Math.random() * Math.PI
-        burstVel[i*3]   = Math.sin(phi) * Math.cos(theta) * speed
-        burstVel[i*3+1] = Math.sin(phi) * Math.sin(theta) * speed
-        burstVel[i*3+2] = Math.cos(phi) * speed
-        burstLife[i]    = 1.0
-      }
-      burstActive = true
-    }
-
-    const burstGeo = new THREE.BufferGeometry()
-    burstGeo.setAttribute('position', new THREE.BufferAttribute(burstPos, 3))
-    const burstMesh = new THREE.Points(burstGeo, new THREE.PointsMaterial({
-      size: 0.08, color: 0xff2d55, transparent: true, opacity: 0.0,
-      blending: THREE.AdditiveBlending, depthWrite: false
-    }))
-    scene.add(burstMesh)
-
-    // Auto-burst every 4s to simulate attacks
-    const burstInterval = setInterval(() => {
-      triggerBurst((Math.random()-0.5)*8, (Math.random()-0.5)*4, (Math.random()-0.5)*4)
-    }, 4000)
-    setTimeout(() => triggerBurst(0, 0, 0), 800)
-
     // ── Animate ───────────────────────────────────────────────────────────
     let frame
     const clock = new THREE.Clock()
@@ -239,27 +212,6 @@ export default function Landing() {
       camera.position.y = -mouse.y * 1.5 + 1
       camera.lookAt(0, 0, 0)
 
-      // Burst animation
-      if (burstActive) {
-        burstTimer += 0.016
-        const bp = burstGeo.attributes.position.array
-        const alive = burstTimer < 2.5
-        burstMesh.material.opacity = alive ? Math.max(0, 1 - burstTimer / 2.5) : 0
-        if (alive) {
-          for (let i = 0; i < burstCount; i++) {
-            bp[i*3]   += burstVel[i*3]
-            bp[i*3+1] += burstVel[i*3+1]
-            bp[i*3+2] += burstVel[i*3+2]
-            burstVel[i*3]   *= 0.97
-            burstVel[i*3+1] *= 0.97
-            burstVel[i*3+2] *= 0.97
-          }
-          burstGeo.attributes.position.needsUpdate = true
-        } else {
-          burstActive = false; burstTimer = 0
-        }
-      }
-
       renderer.render(scene, camera)
     }
     animate()
@@ -273,7 +225,6 @@ export default function Landing() {
 
     return () => {
       cancelAnimationFrame(frame)
-      clearInterval(burstInterval)
       window.removeEventListener('mousemove', onMouseMove)
       window.removeEventListener('resize', onResize)
       if (mountRef.current) mountRef.current.removeChild(renderer.domElement)
@@ -369,10 +320,10 @@ export default function Landing() {
           }}
         >
           {[
-            { v: '0.9946', l: 'Federated F1' },
-            { v: '0.84',   l: 'Non-IID Macro F1' },
-            { v: '3',      l: 'Edge Nodes' },
-            { v: '100%',   l: 'Privacy' },
+            { v: summary?.binary_federated_f1, l: 'Federated F1', format: value => typeof value === 'number' ? value.toFixed(4) : '—' },
+            { v: summary?.multiclass_noniid_f1, l: 'Non-IID Macro F1', format: value => typeof value === 'number' ? value.toFixed(4) : '—' },
+            { v: summary?.configured_node_count, l: 'Configured Nodes', format: value => typeof value === 'number' ? value.toLocaleString() : '—' },
+            { v: null, l: 'Privacy measurement', format: () => '—' },
           ].map((s, i, arr) => (
             <div key={i} style={{
               padding: '1.5rem 2.8rem', textAlign: 'center',
@@ -382,7 +333,7 @@ export default function Landing() {
                 fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '2.4rem',
                 background: 'linear-gradient(90deg, #c4b5fd, #00f5ff)',
                 WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent',
-              }}>{s.v}</div>
+              }}>{s.format(s.v)}</div>
               <div style={{ fontSize: '0.72rem', color: 'var(--muted)', letterSpacing: '0.1em', marginTop: 6 }}>{s.l}</div>
             </div>
           ))}

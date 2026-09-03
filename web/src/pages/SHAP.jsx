@@ -19,17 +19,22 @@ const DESCRIPTIONS = {
 export default function SHAP() {
   const [data, setData] = useState([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
 
   useEffect(() => {
     api.shap()
       .then(d => {
         setData((d.feature_importance || []).slice(0, 15))
+        if (d.error) setError(d.error)
         setLoading(false)
       })
-      .catch(() => setLoading(false))
+      .catch(e => {
+        setError(e.message)
+        setLoading(false)
+      })
   }, [])
 
-  const maxScore = data[0]?.shap_score || 1
+  const maxScore = Math.max(data[0]?.shap_score || 0, 1e-9)
 
   return (
     <motion.div
@@ -51,9 +56,13 @@ export default function SHAP() {
         <div style={{ textAlign: 'center', color: 'var(--muted)', fontFamily: 'var(--font-mono)', paddingTop: '4rem' }}>
           Loading SHAP data...
         </div>
+      ) : error ? (
+        <div style={{ textAlign: 'center', color: '#ff9500', fontFamily: 'var(--font-mono)', paddingTop: '4rem' }}>
+          {error}
+        </div>
       ) : data.length === 0 ? (
         <div style={{ textAlign: 'center', color: 'var(--muted)', fontFamily: 'var(--font-mono)', paddingTop: '4rem' }}>
-          Run explain.py first to generate SHAP results.
+          No SHAP values are available in the current model artifact.
         </div>
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: '1.5rem' }}>

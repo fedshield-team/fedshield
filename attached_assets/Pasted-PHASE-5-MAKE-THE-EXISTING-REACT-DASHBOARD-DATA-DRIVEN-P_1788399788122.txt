@@ -1,0 +1,357 @@
+PHASE 5 — MAKE THE EXISTING REACT DASHBOARD DATA-DRIVEN
+
+Phase 1 is complete and accepted.
+Phase 2 is complete and accepted.
+Phase 3 is complete and accepted.
+Phase 4 is complete and accepted.
+
+Now perform PHASE 5 ONLY.
+
+CRITICAL:
+The existing React dashboard is the approved custom UI.
+
+DO NOT redesign it.
+
+DO NOT replace it.
+
+DO NOT simplify it.
+
+DO NOT create a new dashboard.
+
+DO NOT introduce Streamlit.
+
+DO NOT change the visual identity.
+
+DO NOT change:
+- layout
+- colors
+- typography
+- navigation
+- cards
+- charts
+- globe
+- particle effects
+- animations
+- page structure
+- SOC Monitor design
+- Overview design
+- Training design
+- SHAP/Explainability design
+
+Preserve the existing dashboard exactly as much as possible.
+
+==================================================
+GOAL
+==================================================
+
+Make the existing React dashboard genuinely data-driven.
+
+The dashboard must consume real information from the existing FastAPI/backend/artifacts instead of hardcoded experiment values, fake values, mock traffic, or placeholder predictions.
+
+The UI appearance must remain unchanged.
+
+==================================================
+STEP 1 — INSPECT FIRST
+==================================================
+
+Inspect:
+
+- web/src/App.jsx
+- web/src/api.js
+- web/src/pages/Landing.jsx
+- web/src/pages/Overview.jsx
+- web/src/pages/Training.jsx
+- web/src/pages/SHAP.jsx
+- web/src/pages/SOCMonitor.jsx
+- all existing API endpoints
+- fedshield_runtime.py
+- training history JSON/artifacts
+- models/artifact_manifest.json
+- SQLite schema and runtime database usage
+- existing SHAP outputs
+- existing detection/feed data
+
+Before modifying anything, identify:
+
+1. Which values are currently hardcoded in React.
+2. Which values already have real backend/API sources.
+3. Which values can be derived from real artifacts.
+4. Which values currently have no real source.
+5. Which API response shapes already exist.
+
+Do not invent data sources.
+
+==================================================
+STEP 2 — REMOVE HARDcoded EXPERIMENT DATA
+==================================================
+
+The current dashboard contains experiment values such as:
+
+- Binary Federated F1
+- Binary Centralized F1
+- Multi-Class Non-IID F1
+- Multi-Class IID F1
+- Multi-Class Centralized F1
+- per-class precision/recall/F1
+- training curves
+
+Do NOT simply replace these with different hardcoded numbers.
+
+Trace each value to its actual existing training artifact/history/metrics source.
+
+If a real source exists:
+- connect the dashboard to it.
+
+If a real source does not exist:
+- do not fabricate one.
+- preserve the UI structure but display a truthful unavailable state using the existing visual language.
+
+Do not claim "real" or "nothing hardcoded" unless the data genuinely comes from a real source.
+
+==================================================
+STEP 3 — OVERVIEW PAGE
+==================================================
+
+Connect the existing Overview page to real backend/artifact data.
+
+The existing cards:
+
+- Total Packets Logged
+- Attacks Detected
+- IPs Auto-Blocked
+
+must reflect real backend/database state.
+
+If the database is genuinely empty:
+show zero.
+
+Do NOT create fake detections just to populate the dashboard.
+
+For experiment results:
+use actual verified training artifacts/history.
+
+For federated nodes:
+use the actual configured federated node metadata only if it exists in the project.
+
+Do not invent node activity.
+
+==================================================
+STEP 4 — TRAINING PAGE
+==================================================
+
+Connect the existing Training page to real training history.
+
+The existing charts should use actual available training-history JSON/artifacts.
+
+Preserve:
+
+- chart types
+- chart styling
+- chart layout
+- legends
+- labels
+- existing visual appearance
+
+Do not generate synthetic curves.
+
+If only part of the requested history exists, display only the real available data and clearly indicate unavailable portions without redesigning the page.
+
+Per-class metrics must come from actual evaluation artifacts.
+
+Do not fabricate support counts, precision, recall, or F1.
+
+==================================================
+STEP 5 — SOC MONITOR
+==================================================
+
+Connect the existing SOC Monitor to the existing backend endpoints.
+
+Use real:
+
+- detection counts
+- attack breakdown
+- attack timeline
+- blocked IP data
+- live feed
+- node status where actually available
+
+The existing auto-refresh behavior may remain.
+
+Do not generate fake packets.
+
+Do not generate fake attacks.
+
+Do not generate fake IP addresses.
+
+Do not generate fake confidence scores.
+
+If live_capture.py is unavailable in the current environment, the UI must truthfully show an empty/unavailable state rather than simulated traffic.
+
+DO NOT MODIFY live_capture.py in this phase.
+
+==================================================
+STEP 6 — SHAP PAGE
+==================================================
+
+Connect the existing SHAP/Explainability page to actual SHAP output/backend data.
+
+Do not generate fake SHAP values.
+
+Do not hardcode feature importance values.
+
+Use the existing SHAP backend/output if available.
+
+If SHAP is unavailable, show the existing page's truthful unavailable state rather than inventing explanations.
+
+Do not redesign the page.
+
+==================================================
+STEP 7 — API CLIENT
+==================================================
+
+Inspect web/src/api.js.
+
+Remove any hardcoded production credentials.
+
+Do not add passwords to frontend source code.
+
+Authentication must use the existing secure backend authentication flow.
+
+Use the existing JWT/auth mechanism.
+
+Do not expose:
+- FEDSHIELD_PASSWORD
+- ANALYST_PASSWORD
+- JWT_SECRET_KEY
+- GROQ_API_KEY
+- ABUSEIPDB_API_KEY
+
+in frontend source.
+
+Use environment configuration only where appropriate.
+
+==================================================
+STEP 8 — AUTHENTICATION
+==================================================
+
+Verify the dashboard authentication flow.
+
+Do not change the backend password model unless absolutely necessary.
+
+Do not introduce hardcoded fallback passwords.
+
+Verify that:
+
+Admin:
+username = fedshield
+
+Analyst:
+username = analyst
+
+use the configured Replit Secrets.
+
+Do not print secret values.
+
+Test authentication without exposing credentials in logs.
+
+==================================================
+STEP 9 — COMPLIANCE TEXT
+==================================================
+
+Inspect the existing compliance section.
+
+Do not redesign it.
+
+Do not claim legal/regulatory certification unless the project actually has such certification.
+
+If the current wording implies guaranteed GDPR, HIPAA, PCI-DSS, or ISO 27001 compliance, change only the wording necessary to accurately describe the implemented architectural/security controls.
+
+For example, distinguish:
+
+"architectural alignment/control"
+
+from
+
+"certified compliance."
+
+Do not make unsupported claims.
+
+==================================================
+STEP 10 — API FAILURE HANDLING
+==================================================
+
+If an API request fails:
+
+Do not silently turn it into fake zeros or fake successful data.
+
+Use the existing UI style to represent unavailable/error state.
+
+Preserve existing response shapes where possible.
+
+Do not redesign the interface.
+
+==================================================
+STEP 11 — TESTING
+==================================================
+
+Actually test:
+
+1. React production build.
+2. Authentication flow.
+3. Overview API data.
+4. Training data loading.
+5. SOC API data loading.
+6. SHAP data loading.
+7. Empty database behavior.
+8. API failure behavior.
+9. No hardcoded credentials in frontend.
+10. No fake traffic/predictions/metrics introduced.
+
+Search the frontend source for suspicious hardcoded experiment values and credentials.
+
+Do not claim tests passed if they were not actually executed.
+
+==================================================
+CRITICAL SAFETY RULE
+==================================================
+
+Do NOT modify:
+
+- ML model architecture
+- federated learning implementation
+- live_capture.py
+- Docker configuration
+- deployment configuration
+- database schema
+
+unless a minimal compatibility issue is discovered and explicitly reported first.
+
+Do not retrain the full model.
+
+Do not create fake artifacts.
+
+Do not create synthetic dashboard data.
+
+==================================================
+FINAL REPORT
+==================================================
+
+Report:
+
+1. Every file changed.
+2. Every hardcoded data source removed/replaced.
+3. Which API/artifact supplies each dashboard value.
+4. Which dashboard values remain unavailable and why.
+5. Authentication test result.
+6. React build result.
+7. SOC data result.
+8. Training data result.
+9. SHAP data result.
+10. Compliance wording changes.
+11. Confirmation that the visual dashboard was NOT redesigned.
+12. Confirmation that no fake data was introduced.
+13. Any remaining issues.
+
+STOP after Phase 5.
+
+Do not proceed to Phase 6.

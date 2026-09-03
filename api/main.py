@@ -4,7 +4,9 @@ FedShield API — FastAPI backend with JWT Authentication + Prometheus Metrics
 
 import sqlite3
 import json
+import logging
 import os
+import re
 import threading
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -24,6 +26,9 @@ from prometheus_client import (
     CONTENT_TYPE_LATEST,
 )
 from fedshield_runtime import runtime
+
+
+logger = logging.getLogger("fedshield.api")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -101,24 +106,24 @@ MODEL_F1_SCORE = Gauge(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Static model scores from training
+# Model scores from the recorded training artifacts
 # ─────────────────────────────────────────────────────────────────────────────
 
-MODEL_F1_SCORE.labels(
-    model_type="federated_noniid"
-).set(0.84)
+MODEL_F1_ARTIFACTS = {
+    "federated_noniid": ("federated_noniid_history.json", "macro_f1"),
+    "federated_iid": ("federated_multiclass_history.json", "macro_f1"),
+    "centralized": ("multiclass_history.json", "macro_f1"),
+    "binary_federated": ("federated_history.json", "f1"),
+}
 
-MODEL_F1_SCORE.labels(
-    model_type="federated_iid"
-).set(0.81)
-
-MODEL_F1_SCORE.labels(
-    model_type="centralized"
-).set(0.79)
-
-MODEL_F1_SCORE.labels(
-    model_type="binary_federated"
-).set(0.9946)
+for model_type, (filename, metric) in MODEL_F1_ARTIFACTS.items():
+    try:
+        with open(os.path.join(BASE, "models", filename), encoding="utf-8") as file:
+            history = json.load(file)
+        if history:
+            MODEL_F1_SCORE.labels(model_type=model_type).set(history[-1][metric])
+    except (OSError, ValueError, TypeError, KeyError, IndexError):
+        logger.warning("Model score artifact unavailable for %s", model_type)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -455,6 +460,59 @@ def health():
     }
 
 
+def _read_training_history(filename):
+    """Read one real training artifact without exposing filesystem details."""
+    path = os.path.join(BASE, "models", filename)
+    with open(path, encoding="utf-8") as file:
+        return json.load(file)
+
+
+def _configured_federated_node_count():
+    """Count the Flower client services declared by the existing compose file."""
+    compose_path = os.path.join(BASE, "docker-compose.yml")
+    try:
+        with open(compose_path, encoding="utf-8") as file:
+            return len(re.findall(r"^\s{2}node\d+:", file.read(), re.MULTILINE))
+    except OSError:
+        return None
+
+
+@app.get(
+    "/api/public-summary",
+    tags=["System"],
+)
+def public_summary():
+    """Expose non-sensitive real experiment values needed before login."""
+    result = {
+        "binary_federated_f1": None,
+        "multiclass_noniid_f1": None,
+        "configured_node_count": _configured_federated_node_count(),
+        "errors": {},
+    }
+
+    sources = {
+        "binary_federated_f1": ("federated_history.json", "f1"),
+        "multiclass_noniid_f1": (
+            "federated_noniid_history.json",
+            "macro_f1",
+        ),
+    }
+    for key, (filename, metric) in sources.items():
+        try:
+            history = _read_training_history(filename)
+            if history:
+                result[key] = history[-1].get(metric)
+            else:
+                result["errors"][key] = "Training history unavailable"
+        except (OSError, ValueError, TypeError, AttributeError) as exc:
+            logger.exception("Public training summary unavailable for %s", key)
+            result["errors"][key] = "Training history unavailable"
+
+    if not result["errors"]:
+        result.pop("errors")
+    return result
+
+
 @app.get(
     "/metrics",
     tags=["Observability"]
@@ -556,7 +614,10 @@ def stats(
         conn = get_db()
 
         if not conn:
-            raise Exception("Database unavailable")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Statistics data is unavailable",
+            )
 
         total = conn.execute(
             "SELECT COUNT(*) FROM detections"
@@ -581,13 +642,14 @@ def stats(
             "normal": total - attacks,
         }
 
+    except HTTPException:
+        raise
     except Exception:
-        return {
-            "total": 0,
-            "attacks": 0,
-            "blocked": 0,
-            "normal": 0,
-        }
+        logger.exception("Failed to load SOC statistics")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Statistics data is unavailable",
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -612,7 +674,10 @@ def feed(
         conn = get_db()
 
         if not conn:
-            return []
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Detection feed is unavailable",
+            )
 
         rows = conn.execute(
             """
@@ -639,8 +704,14 @@ def feed(
             for row in rows
         ]
 
+    except HTTPException:
+        raise
     except Exception:
-        return []
+        logger.exception("Failed to load detection feed")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Detection feed is unavailable",
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -664,7 +735,10 @@ def breakdown(
         conn = get_db()
 
         if not conn:
-            return []
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Attack breakdown is unavailable",
+            )
 
         rows = conn.execute(
             """
@@ -684,8 +758,14 @@ def breakdown(
             for row in rows
         ]
 
+    except HTTPException:
+        raise
     except Exception:
-        return []
+        logger.exception("Failed to load attack breakdown")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Attack breakdown is unavailable",
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -709,7 +789,10 @@ def timeline(
         conn = get_db()
 
         if not conn:
-            return []
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Attack timeline is unavailable",
+            )
 
         rows = conn.execute(
             """
@@ -731,8 +814,14 @@ def timeline(
             for row in rows
         ]
 
+    except HTTPException:
+        raise
     except Exception:
-        return []
+        logger.exception("Failed to load attack timeline")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Attack timeline is unavailable",
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -756,7 +845,10 @@ def blocked_ips(
         conn = get_db()
 
         if not conn:
-            return []
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Blocked IP data is unavailable",
+            )
 
         rows = conn.execute(
             """
@@ -780,8 +872,14 @@ def blocked_ips(
             for row in rows
         ]
 
+    except HTTPException:
+        raise
     except Exception:
-        return []
+        logger.exception("Failed to load blocked IP data")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Blocked IP data is unavailable",
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -801,8 +899,6 @@ def training(
         method="GET"
     ).inc()
 
-    result = {}
-
     files = {
         "baseline": "models/baseline_history.json",
         "federated": "models/federated_history.json",
@@ -810,24 +906,19 @@ def training(
         "iid": "models/federated_multiclass_history.json",
         "noniid": "models/federated_noniid_history.json",
     }
+    result = {}
+    errors = {}
 
     for key, path in files.items():
-
-        full_path = os.path.join(
-            BASE,
-            path
-        )
-
         try:
-            with open(
-                full_path,
-                encoding="utf-8"
-            ) as file:
-
-                result[key] = json.load(file)
-
-        except Exception:
+            result[key] = _read_training_history(path.removeprefix("models/"))
+        except (OSError, ValueError, TypeError):
+            logger.exception("Training history unavailable for %s", key)
             result[key] = []
+            errors[key] = "Training history unavailable"
+
+    if errors:
+        result["errors"] = errors
 
     return result
 
@@ -864,10 +955,11 @@ def shap(
 
             return json.load(file)
 
-    except Exception:
-
+    except (OSError, ValueError, TypeError):
+        logger.exception("SHAP results unavailable")
         return {
-            "feature_importance": []
+            "feature_importance": [],
+            "error": "SHAP results unavailable",
         }
 
 
@@ -905,9 +997,11 @@ def drift(
 
             return logs[-1] if logs else {}
 
-    except Exception:
-
-        return {}
+    except (OSError, ValueError, TypeError):
+        logger.exception("Drift history unavailable")
+        return {
+            "error": "Drift history unavailable",
+        }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
