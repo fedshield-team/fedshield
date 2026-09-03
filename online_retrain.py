@@ -348,6 +348,30 @@ def _latest_drift_is_critical():
         return False
 
 
+def _current_drift_is_critical():
+    """Evaluate critical drift from current real detections.
+
+    Dashboard reads do not write drift logs, so retraining must not depend
+    on a previously persisted log entry to notice a new attack-rate spike.
+    """
+    try:
+        from drift_detection import (
+            analyze_training_history,
+            detect_drift,
+            get_live_metrics,
+        )
+
+        metrics = get_live_metrics()
+        history = analyze_training_history()
+        alerts = detect_drift(metrics, history)
+        return any(
+            alert.get("level") == "CRITICAL"
+            for alert in alerts
+        )
+    except Exception:
+        return False
+
+
 def should_retrain():
 
     return (
@@ -355,6 +379,8 @@ def should_retrain():
         >= MIN_BUFFER_SAMPLES
         or
         _latest_drift_is_critical()
+        or
+        _current_drift_is_critical()
     )
 
 
@@ -548,6 +574,8 @@ def run_incremental_retrain(
 
     critical = (
         _latest_drift_is_critical()
+        or
+        _current_drift_is_critical()
     )
 
     if (

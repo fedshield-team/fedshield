@@ -28,7 +28,7 @@ joblib==1.5.3
 
 # --- Explainability ---
 
-shap==0.52.0
+shap==0.51.0
 numba==0.65.1
 llvmlite==0.47.0
 slicer==0.0.8
@@ -83,4 +83,4 @@ sympy==1.14.0
 networkx==3.6.1
 Jinja2==3.1.6
 MarkupSafe==3.0.3
-click==8.4.1
+click==8.4.1python-dotenv==1.2.3

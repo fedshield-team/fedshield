@@ -36,3 +36,6 @@ models/shap_results.json
 # Generated frontend/temp files
 rcApp.jsxcode
 websrcApp.jsx
+
+# SQLite runtime files
+models/*.db-*

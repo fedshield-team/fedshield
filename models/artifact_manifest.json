@@ -1,0 +1,31 @@
+{
+  "manifest_version": "1.0",
+  "artifacts": {
+    "models/federated_noniid_model.pth": {
+      "purpose": "Active federated Non-IID multiclass IDS model",
+      "architecture": "MultiClassIDS",
+      "input_features": 41,
+      "output_classes": 5,
+      "size_bytes": 67487,
+      "sha256": "dc3ea967016f84f75c4713888267cffe7e550248e27290927fbc214cc4e0b03c"
+    },
+    "models/scaler_multiclass.pkl": {
+      "purpose": "Active multiclass feature standardization",
+      "type": "sklearn.preprocessing.StandardScaler",
+      "input_features": 41,
+      "size_bytes": 1551,
+      "sha256": "a511c83bf688fedf093c8838bcebd9e0be8e6c56e7c30f417a4b0dae18ac7e13"
+    },
+    "models/encoders_multiclass.pkl": {
+      "purpose": "Active multiclass categorical feature encoders",
+      "type": "dict of sklearn LabelEncoder objects",
+      "encoders": [
+        "protocol_type",
+        "service",
+        "flag"
+      ],
+      "size_bytes": 1622,
+      "sha256": "0aba607b8edbce8701fe19ea9bc775b2d3fb4693b79916247ec6c67b6fa403e5"
+    }
+  }
+}

@@ -1,5 +1,6 @@
--r requirements.txt
+﻿-r requirements.txt
 
 # --- Windows service support ---
 
 pywin32==311
+python-dotenv==1.2.3

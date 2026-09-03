@@ -14,12 +14,18 @@ file needing to import anything from main.py — avoids a circular import
 between this file and main.py.
 """
 
+import os
+import sqlite3
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from model import MULTICLASS_CLASS_NAMES
 from llm_incident_report import generate_incident_report, get_cached_report
 
 router = APIRouter(prefix="/incidents", tags=["incident-reports"])
+BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DB_PATH = os.path.join(BASE, "models", "fedshield_logs.db")
 
 
 class FlowStats(BaseModel):
@@ -40,9 +46,33 @@ class IncidentReportRequest(BaseModel):
     shap_features: list[tuple[str, float]]
 
 
+def _detection_exists(incident_id: str) -> bool:
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            return conn.execute(
+                """
+                SELECT 1
+                FROM detections
+                WHERE incident_id=?
+                LIMIT 1
+                """,
+                (incident_id,),
+            ).fetchone() is not None
+    except sqlite3.Error as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Detection store unavailable: {exc}",
+        ) from exc
+
+
 @router.get("/{incident_id}/report")
 def read_incident_report(incident_id: str):
     """Fetch a cached report only — does not call the LLM. Fast path for the dashboard."""
+    if not _detection_exists(incident_id):
+        raise HTTPException(
+            status_code=404,
+            detail="No detection exists for this incident",
+        )
     cached = get_cached_report(incident_id)
     if cached is None:
         raise HTTPException(status_code=404, detail="No report generated yet for this incident")
@@ -53,6 +83,30 @@ def read_incident_report(incident_id: str):
 def create_incident_report(incident_id: str, body: IncidentReportRequest):
     """Generate (or retrieve cached) report. Call this from live_capture.py right after detection,
     or lazily from the dashboard the first time an analyst opens an incident."""
+    if incident_id != body.incident_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Incident ID in the path must match the request body",
+        )
+
+    if not _detection_exists(incident_id):
+        raise HTTPException(
+            status_code=404,
+            detail="No detection exists for this incident",
+        )
+
+    if not 0 <= body.confidence <= 1:
+        raise HTTPException(
+            status_code=422,
+            detail="Confidence must be between 0 and 1",
+        )
+
+    if body.prediction not in MULTICLASS_CLASS_NAMES:
+        raise HTTPException(
+            status_code=422,
+            detail="Prediction is not a supported multiclass class",
+        )
+
     report_text = generate_incident_report(
         incident_id=incident_id,
         flow_stats=body.flow_stats.model_dump(),
@@ -60,4 +114,14 @@ def create_incident_report(incident_id: str, body: IncidentReportRequest):
         confidence=body.confidence,
         shap_features=body.shap_features
     )
+
+    if report_text is None:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Incident report generation is unavailable; "
+                "the underlying detection remains recorded"
+            ),
+        )
+
     return {"incident_id": incident_id, "report_text": report_text}

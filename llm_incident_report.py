@@ -44,7 +44,9 @@ def _client():
             "GROQ_API_KEY is not configured"
         )
 
-    return Groq()
+    return Groq(
+        timeout=8.0
+    )
 
 
 def init_incident_reports_table():
@@ -182,21 +184,18 @@ def generate_incident_report(
         ).strip()
 
         if not report_text:
-
-            report_text = (
-                "No report content returned. "
-                f"Prediction: {prediction} "
-                f"({confidence:.1%})."
+            print(
+                "[IncidentReport] Groq returned no report content."
             )
+            return None
 
     except Exception as e:
 
-        report_text = (
-            "[LLM report generation failed: "
-            f"{e}] "
-            f"Prediction: {prediction} "
-            f"({confidence:.1%})."
+        print(
+            "[IncidentReport] Report generation unavailable: "
+            f"{e}"
         )
+        return None
 
     with _connect() as conn:
 

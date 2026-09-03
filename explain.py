@@ -7,12 +7,19 @@ as federated training and live inference.
 
 import json
 import os
+from datetime import datetime, timezone
 
 import numpy as np
 import torch
 import shap
 
-from model import MultiClassIDS
+from model import (
+    MULTICLASS_CLASS_NAMES,
+    MULTICLASS_FEATURE_NAMES,
+    MULTICLASS_INPUT_DIM,
+    MULTICLASS_NUM_CLASSES,
+    MultiClassIDS,
+)
 
 
 # ============================================================
@@ -35,6 +42,12 @@ X_TEST_PATH = os.path.join(
     "X_test_mc.npy"
 )
 
+VERSION_PATH = os.path.join(
+    BASE,
+    "models",
+    "model_version.json"
+)
+
 OUTPUT_PATH = os.path.join(
     BASE,
     "models",
@@ -46,58 +59,8 @@ OUTPUT_PATH = os.path.join(
 # CONSTANTS
 # ============================================================
 
-CLASS_NAMES = [
-    "Normal",
-    "DoS",
-    "Probe",
-    "R2L",
-    "U2R"
-]
-
-
-FEATURE_NAMES = [
-    "duration",
-    "protocol_type",
-    "service",
-    "flag",
-    "src_bytes",
-    "dst_bytes",
-    "land",
-    "wrong_fragment",
-    "urgent",
-    "hot",
-    "num_failed_logins",
-    "logged_in",
-    "num_compromised",
-    "root_shell",
-    "su_attempted",
-    "num_root",
-    "num_file_creations",
-    "num_shells",
-    "num_access_files",
-    "num_outbound_cmds",
-    "is_host_login",
-    "is_guest_login",
-    "count",
-    "srv_count",
-    "serror_rate",
-    "srv_serror_rate",
-    "rerror_rate",
-    "srv_rerror_rate",
-    "same_srv_rate",
-    "diff_srv_rate",
-    "srv_diff_host_rate",
-    "dst_host_count",
-    "dst_host_srv_count",
-    "dst_host_same_srv_rate",
-    "dst_host_diff_srv_rate",
-    "dst_host_same_src_port_rate",
-    "dst_host_srv_diff_host_rate",
-    "dst_host_serror_rate",
-    "dst_host_srv_serror_rate",
-    "dst_host_rerror_rate",
-    "dst_host_srv_rerror_rate"
-]
+CLASS_NAMES = MULTICLASS_CLASS_NAMES
+FEATURE_NAMES = MULTICLASS_FEATURE_NAMES
 
 
 # ============================================================
@@ -126,13 +89,33 @@ def main():
             "Run preprocess_multiclass.py first."
         )
 
+    try:
+        with open(
+            VERSION_PATH,
+            encoding="utf-8"
+        ) as f:
+            model_version = json.load(f).get("version")
+    except (
+        OSError,
+        ValueError,
+        TypeError
+    ) as e:
+        raise RuntimeError(
+            f"Model version metadata unavailable: {e}"
+        ) from e
+
+    if model_version is None:
+        raise RuntimeError(
+            "Model version metadata does not contain a version."
+        )
+
     # --------------------------------------------------------
     # LOAD SAME MODEL
     # --------------------------------------------------------
 
     model = MultiClassIDS(
-        input_dim=41,
-        num_classes=5
+        input_dim=MULTICLASS_INPUT_DIM,
+        num_classes=MULTICLASS_NUM_CLASSES
     )
 
     state = torch.load(
@@ -294,7 +277,7 @@ def main():
                 f"{arr.shape}"
             )
 
-    if len(mean_abs) != 41:
+    if len(mean_abs) != MULTICLASS_INPUT_DIM:
 
         raise ValueError(
             f"Expected 41 SHAP scores, "
@@ -354,11 +337,25 @@ def main():
                 "model":
                     "federated_noniid_model",
 
+                "model_version":
+                    model_version,
+
+                "model_path":
+                    os.path.relpath(
+                        MODEL_PATH,
+                        BASE
+                    ),
+
+                "generated_at":
+                    datetime.now(
+                        timezone.utc
+                    ).isoformat(),
+
                 "classes":
                     CLASS_NAMES,
 
                 "feature_count":
-                    41,
+                    MULTICLASS_INPUT_DIM,
 
                 "feature_importance":
                     [

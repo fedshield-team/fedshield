@@ -6,7 +6,7 @@ import os
 import sqlite3
 import time
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 
@@ -93,7 +93,7 @@ def get_live_metrics(
 
         # New live_capture.py stores ISO timestamps.
         cutoff = (
-            datetime.now()
+            datetime.now(timezone.utc)
             - timedelta(
                 minutes=window_minutes
             )
