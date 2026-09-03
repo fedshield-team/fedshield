@@ -104,6 +104,10 @@ class IntrusionDetector(nn.Module):
 
         return self.network(x)
 
+    def predict_proba(self, x):
+        """Return probabilities while keeping logits for BCEWithLogitsLoss."""
+        return torch.sigmoid(self.forward(x))
+
     def get_weights(self):
 
         return [

@@ -22,7 +22,13 @@ function AttackGlobe() {
     const el = mountRef.current
     if (!el) return
     const W = el.clientWidth, H = el.clientHeight
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
+    let renderer
+    try {
+      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
+    } catch {
+      // The SOC charts and packet feed do not depend on WebGL.
+      return undefined
+    }
     renderer.setSize(W, H)
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
     el.appendChild(renderer.domElement)

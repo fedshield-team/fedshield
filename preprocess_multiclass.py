@@ -272,18 +272,18 @@ def load_multiclass(path):
             X_train_df[column]
         )
 
-        X_train_df.loc[
-            :,
-            column
-        ] = transform_with_unknown(
+        # Pandas 3 may infer Arrow-backed string columns here.  Assigning
+        # encoded integers into that dtype raises a TypeError, so explicitly
+        # use an object column before replacing categories with numbers.
+        X_train_df[column] = X_train_df[column].astype(object)
+        X_test_df[column] = X_test_df[column].astype(object)
+
+        X_train_df[column] = transform_with_unknown(
             encoder,
             X_train_df[column]
         )
 
-        X_test_df.loc[
-            :,
-            column
-        ] = transform_with_unknown(
+        X_test_df[column] = transform_with_unknown(
             encoder,
             X_test_df[column]
         )

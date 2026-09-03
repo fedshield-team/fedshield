@@ -5,11 +5,15 @@ FedShield API — FastAPI backend with JWT Authentication + Prometheus Metrics
 import sqlite3
 import json
 import os
+import threading
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from fastapi import FastAPI, Depends, HTTPException, status, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel
@@ -19,6 +23,7 @@ from prometheus_client import (
     generate_latest,
     CONTENT_TYPE_LATEST,
 )
+from fedshield_runtime import runtime
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -35,6 +40,11 @@ TOKEN_EXPIRE_HOURS = 24
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_PATH = os.path.join(BASE, "models", "fedshield_logs.db")
+WEB_DIST = Path(BASE) / "web" / "dist"
+
+capture_module = None
+capture_thread = None
+capture_start_lock = threading.Lock()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -235,6 +245,50 @@ def verify_token(
         )
 
 
+def require_admin(current_user: dict = Depends(verify_token)) -> dict:
+    if current_user.get("role") != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin role required",
+        )
+    return current_user
+
+
+def start_live_capture():
+    """Start the existing packet capture loop once, without blocking the API."""
+    global capture_module, capture_thread
+    with capture_start_lock:
+        if capture_thread is not None and capture_thread.is_alive():
+            return
+
+        try:
+            import live_capture
+        except Exception as exc:
+            print(f"[WARN] Live capture unavailable: {exc}")
+            return
+
+        capture_module = live_capture
+        capture_thread = threading.Thread(
+            target=live_capture.start_capture,
+            name="fedshield-live-capture",
+            daemon=True,
+        )
+        capture_thread.start()
+
+
+def live_capture_status():
+    return {
+        "enabled": capture_module is not None,
+        "running": bool(
+            capture_module is not None
+            and getattr(capture_module, "capture_running", False)
+        ),
+        "thread_alive": bool(
+            capture_thread is not None and capture_thread.is_alive()
+        ),
+    }
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # FastAPI application
 # ─────────────────────────────────────────────────────────────────────────────
@@ -281,6 +335,20 @@ app.include_router(
     incident_router,
     dependencies=[Depends(verify_token)]
 )
+
+
+@app.on_event("startup")
+def initialize_runtime():
+    """Initialize shared stores and optionally attach real packet capture."""
+    from llm_incident_report import init_incident_reports_table
+    from online_retrain import init_retrain_buffer
+
+    init_incident_reports_table()
+    init_retrain_buffer()
+    if os.getenv("FEDSHIELD_START_CAPTURE", "1").lower() not in {
+        "0", "false", "no"
+    }:
+        start_live_capture()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -840,3 +908,89 @@ def drift(
     except Exception:
 
         return {}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ML — Shared runtime and operational controls
+# ─────────────────────────────────────────────────────────────────────────────
+
+class InferenceRequest(BaseModel):
+    features: list[float]
+    scaled: bool = False
+    explain: bool = True
+
+
+@app.get(
+    "/api/runtime",
+    tags=["ML"],
+)
+def runtime_status(_: dict = Depends(verify_token)):
+    API_REQUESTS.labels(
+        endpoint="/api/runtime",
+        method="GET",
+    ).inc()
+    result = runtime.status()
+    result["capture"] = live_capture_status()
+    return result
+
+
+@app.post(
+    "/api/inference",
+    tags=["ML"],
+)
+def inference(
+    body: InferenceRequest,
+    _: dict = Depends(verify_token),
+):
+    API_REQUESTS.labels(
+        endpoint="/api/inference",
+        method="POST",
+    ).inc()
+    return runtime.predict(
+        body.features,
+        scaled=body.scaled,
+        explain=body.explain,
+    )
+
+
+@app.post(
+    "/api/live/start",
+    tags=["Live detection"],
+)
+def start_live(_: dict = Depends(require_admin)):
+    start_live_capture()
+    return live_capture_status()
+
+
+@app.post(
+    "/api/retrain",
+    tags=["ML"],
+)
+def retrain(_: dict = Depends(require_admin)):
+    from online_retrain import run_incremental_retrain
+
+    result = run_incremental_retrain()
+    if result.get("accepted"):
+        runtime.reload(force=True)
+    result["runtime"] = runtime.status()
+    return result
+
+
+if WEB_DIST.exists():
+    app.mount(
+        "/assets",
+        StaticFiles(directory=WEB_DIST / "assets"),
+        name="web-assets",
+    )
+
+
+@app.get("/{full_path:path}", include_in_schema=False)
+def serve_react(full_path: str):
+    """Serve the existing React SPA without adding a second frontend."""
+    index_path = WEB_DIST / "index.html"
+    if not index_path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="React dashboard has not been built yet",
+        )
+    return FileResponse(index_path)

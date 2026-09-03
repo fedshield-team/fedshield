@@ -10,7 +10,13 @@ export default function Landing() {
 
   useEffect(() => {
     const W = window.innerWidth, H = window.innerHeight
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
+    let renderer
+    try {
+      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
+    } catch {
+      // The content remains fully usable when the preview/browser has no WebGL.
+      return undefined
+    }
     renderer.setSize(W, H)
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
     mountRef.current.appendChild(renderer.domElement)

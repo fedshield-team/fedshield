@@ -2242,125 +2242,63 @@ def classify_packet(
 
 
 # ============================================================
-# START
+# CAPTURE SERVICE
 # ============================================================
 
-print(
-    "\n============================================================"
-)
-
-print(
-    "             FedShield Live Capture"
-)
-
-print(
-    "============================================================"
-)
-
-print(
-    "Model: federated_noniid_model.pth"
-)
-
-print(
-    "Model architecture: MultiClassIDS"
-)
-
-print(
-    "Classes: Normal / DoS / Probe / R2L / U2R"
-)
-
-print(
-    "Feature pipeline: 41 NSL-KDD-compatible features"
-)
-
-print(
-    f"Port scan: "
-    f"{SCAN_PORT_THRESHOLD}+ TCP ports in "
-    f"{SCAN_WINDOW_SECONDS}s"
-)
-
-print(
-    f"ML attack threshold: "
-    f"{ML_ATTACK_THRESHOLD:.0%}"
-)
-
-print(
-    f"ML confirmation: "
-    f"{ML_CONFIRMATIONS_REQUIRED} events/"
-    f"{ML_CONFIRMATION_WINDOW}s"
-)
-
-print(
-    "Auto-block: confirmed port scans only"
-)
-
-print(
-    "SHAP: enabled when available"
-)
-
-print(
-    "Online retraining: enabled"
-)
-
-print(
-    "Press Ctrl+C to stop.\n"
-)
+capture_running = False
 
 
-try:
+def start_capture():
+    """Start packet capture when the host permits it.
 
-    sniff(
-        prn=classify_packet,
-        store=False,
-        count=0
-    )
+    Keeping capture behind an explicit function makes this module safe to
+    import from FastAPI while preserving the original standalone command.
+    """
+    global capture_running
+    capture_running = True
 
-except KeyboardInterrupt:
-
+    print("\n============================================================")
+    print("             FedShield Live Capture")
+    print("============================================================")
+    print("Model: federated_noniid_model.pth")
+    print("Model architecture: MultiClassIDS")
+    print("Classes: Normal / DoS / Probe / R2L / U2R")
+    print("Feature pipeline: 41 NSL-KDD-compatible features")
     print(
-        "\nCapture stopped."
+        f"Port scan: {SCAN_PORT_THRESHOLD}+ TCP ports in "
+        f"{SCAN_WINDOW_SECONDS}s"
     )
-
-except Exception as e:
-
+    print(f"ML attack threshold: {ML_ATTACK_THRESHOLD:.0%}")
     print(
-        f"\n[ERROR] Packet capture failed: "
-        f"{e}"
+        f"ML confirmation: {ML_CONFIRMATIONS_REQUIRED} events/"
+        f"{ML_CONFIRMATION_WINDOW}s"
     )
-
-finally:
+    print("Auto-block: confirmed port scans only")
+    print("SHAP: enabled when available")
+    print("Online retraining: enabled")
+    print("Press Ctrl+C to stop.\n")
 
     try:
-
-        with open(
-            LIVE_LOG_PATH,
-            "w",
-            encoding="utf-8"
-        ) as f:
-
-            json.dump(
-                log[-200:],
-                f,
-                indent=2
-            )
-
-    except OSError as e:
-
-        print(
-            f"[WARN] Final log write failed: "
-            f"{e}"
+        sniff(
+            prn=classify_packet,
+            store=False,
+            count=0
         )
+    except KeyboardInterrupt:
+        print("\nCapture stopped.")
+    except Exception as e:
+        print(f"\n[ERROR] Packet capture failed: {e}")
+    finally:
+        capture_running = False
+        try:
+            with open(LIVE_LOG_PATH, "w", encoding="utf-8") as f:
+                json.dump(log[-200:], f, indent=2)
+        except OSError as e:
+            print(f"[WARN] Final log write failed: {e}")
+        print(f"\nSession packets: {len(log)}")
+        print(f"Blocked IPs: {len(blocked_ips)}")
+        print("FedShield capture session ended.")
 
-    print(
-        f"\nSession packets: "
-        f"{len(log)}"
-    )
 
-    print(
-        f"Blocked IPs: "
-        f"{len(blocked_ips)}"
-    )
-
-    print(
-        "FedShield capture session ended."
-    )
+if __name__ == "__main__":
+    start_capture()

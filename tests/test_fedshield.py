@@ -17,7 +17,7 @@ class TestIntrusionDetector:
     def test_output_range(self):
         model = IntrusionDetector()
         x = torch.randn(100, 41)
-        out = model(x)
+        out = model.predict_proba(x)
         assert (out >= 0).all() and (out <= 1).all()
 
     def test_get_set_weights(self):
