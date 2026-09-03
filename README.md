@@ -2,8 +2,8 @@
 ### Privacy-Preserving Network Intrusion Detection using Federated Learning, Online Learning & Explainable AI
 
 [![CI/CD](https://github.com/fedshield-team/fedshield/actions/workflows/ci.yml/badge.svg)](https://github.com/fedshield-team/fedshield/actions)
-![Python](https://img.shields.io/badge/Python-3.12-blue)
-![PyTorch](https://img.shields.io/badge/PyTorch-2.5-orange)
+![Python](https://img.shields.io/badge/Python-3.11%2B-blue)
+![PyTorch](https://img.shields.io/badge/PyTorch-CPU-orange)
 ![Flower](https://img.shields.io/badge/Flower-FL-green)
 ![Docker](https://img.shields.io/badge/Docker-Containerized-blue)
 
@@ -13,9 +13,9 @@
 
 ## 🔥 The Problem
 
-Traditional Intrusion Detection Systems (IDS) require centralizing sensitive network traffic data — violating GDPR, HIPAA, and PCI-DSS compliance. Hospitals, banks, and enterprises **cannot legally share raw traffic data**.
+Traditional Intrusion Detection Systems (IDS) often centralize sensitive network traffic data. FedShield is designed to keep training data at the edge while sharing model weights for federated coordination.
 
-FedShield eliminates this trade-off: **security AND privacy, simultaneously** — and keeps learning from live traffic without ever needing to re-centralize it.
+FedShield combines intrusion detection with federated and online learning without requiring raw training traffic to be centralized.
 
 ---
 
@@ -43,7 +43,7 @@ The aggregation logic (`server/lambda_aggregator.py`) is written to run as an **
 ## ✨ Key Features
 
 ### 1. Federated Learning Core
-Three simulated edge nodes (hospital, bank, enterprise) train a shared `IntrusionDetector` model on local data splits and aggregate via FedAvg — coordinated through Flower and Docker Compose, with no raw traffic ever leaving a node.
+Three simulated edge nodes (hospital, bank, enterprise) train a shared `MultiClassIDS` model with 41 input features and five output classes (`Normal`, `DoS`, `Probe`, `R2L`, `U2R`) on local data splits and aggregate via FedAvg — coordinated through Flower and Docker Compose.
 
 ### 2. LLM-Powered Incident Reports
 When an intrusion is flagged, FedShield generates a natural-language incident report (via Groq) explaining *why* the traffic was flagged, backed by **SHAP** per-packet feature attributions — turning a raw model score into something an analyst can actually act on.
@@ -66,7 +66,7 @@ Real-time React dashboard with Prometheus metrics, JWT-authenticated API access,
 | Binary F1 | 0.9947 | 0.9946 |
 | Multi-Class Macro F1 | 0.79 | **0.81** ✅ |
 | Privacy | ❌ Data centralized | ✅ Data never shared |
-| Compliance | ❌ GDPR violation | ✅ GDPR compliant |
+| Data handling | Centralized training data | Federated coordination keeps raw training data at each node |
 | Scalability | ❌ Single point | ✅ Distributed |
 | DoS Detection | - | F1: 1.00 |
 | Probe Detection | - | F1: 0.98 |
@@ -96,7 +96,7 @@ Real-time React dashboard with Prometheus metrics, JWT-authenticated API access,
 
 ### Prerequisites
 - Docker Desktop
-- Python 3.12+
+- Python 3.11+ for CI and local development
 - Git
 
 ### Run with Docker (recommended)
@@ -104,12 +104,12 @@ Real-time React dashboard with Prometheus metrics, JWT-authenticated API access,
 git clone https://github.com/fedshield-team/fedshield.git
 cd fedshield
 python download_data.py
-python preprocess.py
+python preprocess_multiclass.py
 docker-compose up --build
 ```
 
 React dashboard available at: **http://localhost:3000**
-API available at: **http://localhost:8000**
+The API is available through the dashboard proxy at **http://localhost:3000**. The Compose API service is internal and is not published directly to the host.
 
 ### Run locally
 ```bash
@@ -117,13 +117,15 @@ python -m venv venv
 venv\Scripts\activate  # Windows
 pip install -r requirements.txt
 python download_data.py
-python preprocess.py
+python preprocess_multiclass.py
 python train_baseline.py
-python federated_train.py
+python federated_noniid.py
 python explain.py
 # Build the existing React dashboard from web/ (or use Docker Compose)
 cd web && npm ci && npm run build
 ```
+
+Run the backend tests with `python -m pytest -q`.
 
 ### Run real Flower FL (4 terminals)
 ```bash
@@ -148,7 +150,7 @@ python server/lambda_aggregator.py
 
 | Layer | Technology | Purpose |
 |-------|-----------|---------|
-| ML | PyTorch | Neural network training |
+| ML | PyTorch 2.12 CPU | MultiClassIDS neural network training and inference |
 | FL | Flower (flwr) | Federated learning coordination |
 | XAI | SHAP | Explainable AI / per-packet feature attribution |
 | LLM | Groq | Natural-language incident report generation |
@@ -183,10 +185,10 @@ fedshield/
 ├── web/                            # Active React dashboard
 │   ├── src/
 │   └── nginx.conf
-├── model.py                       # IntrusionDetector neural net
-├── preprocess.py                  # Data preprocessing
+├── model.py                       # MultiClassIDS neural net (41 features, 5 classes)
+├── preprocess_multiclass.py       # Multiclass data preprocessing
 ├── train_baseline.py              # Centralized baseline
-├── federated_train.py             # Federated training
+├── federated_noniid.py            # Multiclass federated training
 ├── explain.py                     # SHAP explainability
 ├── llm_incident_report.py         # LLM-generated incident reports (Groq + SHAP)
 ├── online_retrain.py              # Online incremental retraining + F1 regression guard
@@ -198,12 +200,11 @@ fedshield/
 
 ---
 
-## 🔒 Privacy Guarantees
+## 🔒 Data Handling
 
-- ✅ Raw network traffic **never leaves** the edge node
-- ✅ Only model weights (mathematical parameters) are transmitted
-- ✅ GDPR, HIPAA, PCI-DSS compliant architecture
-- ✅ No single point of failure
+- Raw network traffic is intended to remain at the edge node.
+- Federated coordination transmits model weights rather than raw training records.
+- These are architectural properties of this project, not a compliance certification.
 
 ---
 
@@ -212,7 +213,19 @@ fedshield/
 The system is architected for cloud deployment beyond the local demo:
 - `server/lambda_aggregator.py` is written as a standard AWS Lambda handler and has been tested locally against real model weight shapes
 - Deployment would package it as a container image on AWS Lambda, with edge nodes running on EC2 and results in RDS instead of SQLite
-- This repo demonstrates the full working system — federated training, aggregation, online retraining, and explainable incident reporting — via Docker-orchestrated local nodes, which validates the same logic that would run in that cloud deployment
+- This repo demonstrates federated training, aggregation, online retraining, and explainable incident reporting via Docker-orchestrated local nodes.
+
+## Standalone Inference Image
+
+The standalone backend image includes the real active inference artifacts:
+
+- `models/federated_noniid_model.pth`
+- `models/scaler_multiclass.pkl`
+- `models/encoders_multiclass.pkl`
+- `models/artifact_manifest.json`
+- `models/model_version.json`
+
+Datasets, databases, logs, caches, secrets, and frontend dependencies are not packaged into the image. Live packet capture is environment-dependent and should be run as an edge/host capability; the API inference runtime does not require packet capture.
 
 ---
 
@@ -220,11 +233,11 @@ The system is architected for cloud deployment beyond the local demo:
 
 | Sector | Use Case | Compliance |
 |--------|---------|-----------|
-| Healthcare | Threat detection across hospital branches | HIPAA |
-| Banking | Fraud and intrusion detection | PCI-DSS |
-| Government | Classified network protection | Zero data exposure |
-| Telecom | Multi-tenant network monitoring | GDPR |
-| Enterprise | Branch office security | ISO 27001 |
+| Healthcare | Threat detection across hospital branches | Evaluate applicable controls |
+| Banking | Fraud and intrusion detection | Evaluate applicable controls |
+| Government | Network protection | Evaluate applicable controls |
+| Telecom | Multi-tenant network monitoring | Evaluate applicable controls |
+| Enterprise | Branch office security | Evaluate applicable controls |
 
 ---
 

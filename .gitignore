@@ -18,6 +18,7 @@ data/
 # ML artifacts
 *.npy
 models/*.pth
+!models/federated_noniid_model.pth
 
 # Databases / local runtime data
 fedshield.db

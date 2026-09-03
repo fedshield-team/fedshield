@@ -83,4 +83,5 @@ sympy==1.14.0
 networkx==3.6.1
 Jinja2==3.1.6
 MarkupSafe==3.0.3
-click==8.4.1python-dotenv==1.2.3
+click==8.4.1
+python-dotenv==1.2.3

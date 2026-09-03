@@ -16,54 +16,65 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
-        python-version: '3.12'
+        python-version: '3.11'
     
     - name: Install dependencies
       run: |
-        pip install torch==2.5.1+cpu --index-url https://download.pytorch.org/whl/cpu
-        pip install numpy pandas scikit-learn flwr shap streamlit plotly
+        python -m pip install --upgrade pip
+        python -m pip install -r requirements.txt
     
-    - name: Download dataset
-      run: python download_data.py
+    - name: Run backend tests
+      run: python -m pytest -q
     
-    - name: Test preprocessing
-      run: python preprocess.py
+    - name: Compile Python source
+      run: python -m compileall -q .
     
-    - name: Test model instantiation
+    - name: Validate active model and runtime
       run: |
         python -c "
-        from model import IntrusionDetector
+        import json
         import torch
-        model = IntrusionDetector()
+        from fedshield_runtime import runtime
+        from model import MultiClassIDS, MULTICLASS_CLASS_NAMES
+        model = MultiClassIDS()
+        assert model.input_dim == 41
+        assert model.num_classes == 5
+        assert MULTICLASS_CLASS_NAMES == ['Normal', 'DoS', 'Probe', 'R2L', 'U2R']
         x = torch.randn(10, 41)
         out = model(x)
-        assert out.shape == (10, 1), 'Model output shape wrong'
-        print('Model test passed!')
+        assert out.shape == (10, 5), 'Model output shape wrong'
+        assert runtime.model is not None, 'Active model artifact did not load'
+        assert runtime.scaler is not None, 'Active scaler artifact did not load'
+        assert runtime.encoders is not None, 'Active encoder artifact did not load'
+        with open('models/artifact_manifest.json', encoding='utf-8') as file:
+            manifest = json.load(file)
+        for artifact in [
+            'models/federated_noniid_model.pth',
+            'models/scaler_multiclass.pkl',
+            'models/encoders_multiclass.pkl',
+            'models/artifact_manifest.json',
+            'models/model_version.json',
+        ]:
+            assert __import__('os').path.exists(artifact), artifact
+        print('Active model/runtime contract passed!')
         "
     
-    - name: Test federated client init
-      run: |
-        python -c "
-        import numpy as np
-        from nodes.node import FedNode
-        X = np.random.randn(100, 41)
-        y = np.random.randint(0, 2, 100).astype(float)
-        node = FedNode(1, X, y)
-        weights = node.get_weights()
-        print(f'Node test passed! Got {len(weights)} weight tensors')
-        "
+    - name: Install frontend dependencies
+      working-directory: web
+      run: npm ci
 
-    - name: Test aggregator
+    - name: Build frontend
+      working-directory: web
+      run: npm run build
+
+    - name: Check tracked repository hygiene
       run: |
-        python -c "
-        import torch
-        from server.aggregator import fed_avg
-        w1 = [torch.randn(128, 41), torch.randn(128)]
-        w2 = [torch.randn(128, 41), torch.randn(128)]
-        w3 = [torch.randn(128, 41), torch.randn(128)]
-        avg = fed_avg([w1, w2, w3])
-        print(f'FedAvg test passed! Averaged {len(avg)} layers')
-        "
+        matches=$(git ls-files | grep -E '(^|/)(\.env|node_modules|__pycache__)(/|$)|\.pyc$|(^|/)models/.*\.db$|(^|/)(live_log|drift_log)\.json$' || true)
+        if [ -n "$matches" ]; then
+          echo "Generated or secret files are tracked:"
+          echo "$matches"
+          exit 1
+        fi
 
     - name: Build Docker image
       run: docker build -t fedshield-test .
