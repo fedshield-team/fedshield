@@ -40,15 +40,22 @@ export default function Overview() {
   const [trainingError, setTrainingError] = useState(null)
 
   useEffect(() => {
-    api.stats()
-      .then(setStats)
-      .catch(error => setStatsError(error.message))
+    const fetchStats = () => {
+      api.stats()
+        .then(setStats)
+        .catch(error => setStatsError(error.message))
+    }
+
+    fetchStats()
+    const statsInterval = setInterval(fetchStats, 3000)
     api.training()
       .then(data => {
         setTraining(data)
         if (data.errors) setTrainingError('Some training histories are unavailable')
       })
       .catch(error => setTrainingError(error.message))
+
+    return () => clearInterval(statsInterval)
   }, [])
 
   const baseline = latestMetric(training?.baseline, 'f1')
